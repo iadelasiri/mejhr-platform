@@ -1,0 +1,171 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mejhr_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mejhr_db}
+      POSTGRES_USER: ${POSTGRES_USER:-mejhr_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mejhr_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mejhr_user} -d ${POSTGRES_DB:-mejhr_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mejhr_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: mejhr_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      DEBUG: ${DEBUG:-true}
+      ENABLE_SAMPLE_DATA: ${ENABLE_SAMPLE_DATA:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000"]}
+      STORAGE_PATH: ${STORAGE_PATH:-/storage}
+      SAUDI_EXCHANGE_BASE_URL: ${SAUDI_EXCHANGE_BASE_URL:-https://www.saudiexchange.sa}
+      SAUDI_EXCHANGE_TIMEOUT: ${SAUDI_EXCHANGE_TIMEOUT:-30}
+      SAUDI_EXCHANGE_RETRY_ATTEMPTS: ${SAUDI_EXCHANGE_RETRY_ATTEMPTS:-3}
+      SAUDI_EXCHANGE_RETRY_SLEEP: ${SAUDI_EXCHANGE_RETRY_SLEEP:-2.0}
+      SAUDI_EXCHANGE_PROXY: ${SAUDI_EXCHANGE_PROXY:-}
+      SAUDI_EXCHANGE_API_KEY: ${SAUDI_EXCHANGE_API_KEY:-}
+      SAUDI_EXCHANGE_USER_AGENT: ${SAUDI_EXCHANGE_USER_AGENT:-Mozilla/5.0 (compatible; MejhrDataBot/1.0; official-data-collection)}
+      SAUDI_EXCHANGE_COMPANIES_PATH: ${SAUDI_EXCHANGE_COMPANIES_PATH:-/wps/portal/saudiexchange/newsandreports/market-data/trading-data/all-shares}
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: mejhr_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      ENABLE_SAMPLE_DATA: ${ENABLE_SAMPLE_DATA:-false}
+      STORAGE_PATH: ${STORAGE_PATH:-/storage}
+      SAUDI_EXCHANGE_BASE_URL: ${SAUDI_EXCHANGE_BASE_URL:-https://www.saudiexchange.sa}
+      SAUDI_EXCHANGE_TIMEOUT: ${SAUDI_EXCHANGE_TIMEOUT:-30}
+      SAUDI_EXCHANGE_RETRY_ATTEMPTS: ${SAUDI_EXCHANGE_RETRY_ATTEMPTS:-3}
+      SAUDI_EXCHANGE_RETRY_SLEEP: ${SAUDI_EXCHANGE_RETRY_SLEEP:-2.0}
+      SAUDI_EXCHANGE_PROXY: ${SAUDI_EXCHANGE_PROXY:-}
+      SAUDI_EXCHANGE_API_KEY: ${SAUDI_EXCHANGE_API_KEY:-}
+      SAUDI_EXCHANGE_USER_AGENT: ${SAUDI_EXCHANGE_USER_AGENT:-Mozilla/5.0 (compatible; MejhrDataBot/1.0; official-data-collection)}
+      SAUDI_EXCHANGE_COMPANIES_PATH: ${SAUDI_EXCHANGE_COMPANIES_PATH:-/wps/portal/saudiexchange/newsandreports/market-data/trading-data/all-shares}
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2 -Q default,pipeline,xbrl
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: mejhr_beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      STORAGE_PATH: ${STORAGE_PATH:-/storage}
+      SAUDI_EXCHANGE_BASE_URL: ${SAUDI_EXCHANGE_BASE_URL:-https://www.saudiexchange.sa}
+      SAUDI_EXCHANGE_TIMEOUT: ${SAUDI_EXCHANGE_TIMEOUT:-30}
+      SAUDI_EXCHANGE_RETRY_ATTEMPTS: ${SAUDI_EXCHANGE_RETRY_ATTEMPTS:-3}
+      SAUDI_EXCHANGE_RETRY_SLEEP: ${SAUDI_EXCHANGE_RETRY_SLEEP:-2.0}
+      SAUDI_EXCHANGE_PROXY: ${SAUDI_EXCHANGE_PROXY:-}
+      SAUDI_EXCHANGE_API_KEY: ${SAUDI_EXCHANGE_API_KEY:-}
+      SAUDI_EXCHANGE_USER_AGENT: ${SAUDI_EXCHANGE_USER_AGENT:-Mozilla/5.0 (compatible; MejhrDataBot/1.0; official-data-collection)}
+      SAUDI_EXCHANGE_COMPANIES_PATH: ${SAUDI_EXCHANGE_COMPANIES_PATH:-/wps/portal/saudiexchange/newsandreports/market-data/trading-data/all-shares}
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+      - celerybeat_schedule:/app/celerybeat
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.workers.celery_app beat --loglevel=info --schedule=/app/celerybeat/celerybeat-schedule
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    container_name: mejhr_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Mejhr}
+      NODE_ENV: development
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  celerybeat_schedule:

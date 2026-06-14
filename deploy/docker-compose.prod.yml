@@ -1,0 +1,206 @@
+# Mejhr Platform — Production Docker Compose
+#
+# Usage:
+#   cp .env.production.example .env
+#   # fill in all values in .env
+#   docker compose -f deploy/docker-compose.prod.yml up -d
+#   docker compose -f deploy/docker-compose.prod.yml exec backend \
+#       alembic upgrade head
+#
+# Key differences from docker-compose.yml (development):
+#   - No source code volume mounts (images are built from committed code)
+#   - backend uses gunicorn + uvicorn workers (not --reload)
+#   - All services restart: always
+#   - Nginx terminates TLS and proxies to backend + frontend
+#   - SSL certs volume mounted from host /etc/letsencrypt
+#   - Production environment variables (APP_ENV=production, DEBUG=false)
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mejhr_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups   # mount for pg_dump scripts
+    expose:
+      - "5432"              # internal only; not published to host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    container_name: mejhr_redis
+    restart: always
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"              # internal only
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: production
+    image: mejhr-backend:latest
+    container_name: mejhr_backend
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ENABLE_SAMPLE_DATA: "false"
+      STORAGE_PATH: /storage
+      CORS_ORIGINS: '["https://${DOMAIN}"]'
+    volumes:
+      - storage_data:/storage
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: production
+    image: mejhr-backend:latest
+    container_name: mejhr_worker
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ENABLE_SAMPLE_DATA: "false"
+      STORAGE_PATH: /storage
+    volumes:
+      - storage_data:/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.workers.celery_app worker
+      --loglevel=info
+      --concurrency=4
+      -Q default,pipeline,xbrl
+      --logfile=/storage/logs/celery-worker.log
+
+  beat:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+      target: production
+    image: mejhr-backend:latest
+    container_name: mejhr_beat
+    restart: always
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      ENABLE_SAMPLE_DATA: "false"
+      STORAGE_PATH: /storage
+    volumes:
+      - storage_data:/storage
+      - celerybeat_schedule:/app/celerybeat
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A app.workers.celery_app beat
+      --loglevel=info
+      --schedule=/app/celerybeat/celerybeat-schedule
+      --logfile=/storage/logs/celery-beat.log
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      target: production
+    image: mejhr-frontend:latest
+    container_name: mejhr_frontend
+    restart: always
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: https://${DOMAIN}
+      NEXT_PUBLIC_APP_NAME: Mejhr
+    expose:
+      - "3000"
+    depends_on:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mejhr_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/mejhr.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - backend
+      - frontend
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+  redis_data:
+  storage_data:
+  celerybeat_schedule:
+  nginx_logs:
+
+networks:
+  default:
+    name: mejhr_prod

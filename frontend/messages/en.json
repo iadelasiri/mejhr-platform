@@ -1,0 +1,129 @@
+{
+  "brand": {
+    "name": "Mejhr",
+    "tagline": "Saudi Financial Data Platform"
+  },
+  "nav": {
+    "home": "Home",
+    "screener": "Screener",
+    "sectors": "Sectors",
+    "announcements": "Announcements",
+    "dataQuality": "Data Quality",
+    "apiDocs": "API",
+    "admin": "Admin",
+    "login": "Login",
+    "logout": "Logout",
+    "register": "Register"
+  },
+  "home": {
+    "title": "Saudi Stock Screener",
+    "subtitle": "Official financial data from Saudi Exchange. Transparent data quality. No fake values.",
+    "pipelineStatus": "Pipeline Status",
+    "notConfigured": "Data pipeline not yet configured",
+    "notConfiguredDesc": "Phase 2 will connect the official Saudi Exchange data pipeline.",
+    "dataRules": "Data Rules",
+    "rule1": "Official data from Saudi Exchange only",
+    "rule2": "XBRL filings parsed directly",
+    "rule3": "No yfinance, no unofficial sources",
+    "rule4": "Missing data shown as empty, never fabricated",
+    "rule5": "Every value includes source and timestamp"
+  },
+  "screener": {
+    "title": "Stock Screener",
+    "subtitle": "Filter Saudi-listed companies by financial metrics",
+    "noData": "No official Saudi Exchange company data imported yet",
+    "noDataDesc": "Run the Saudi Exchange connectivity test and companies refresh job. Then the full pipeline: normalize → calculate_ratios → build_screener",
+    "columns": {
+      "symbol": "Symbol",
+      "company": "Company",
+      "market": "Market",
+      "sector": "Sector",
+      "price": "Price",
+      "change": "Change %",
+      "marketCap": "Market Cap",
+      "revenue": "Revenue",
+      "netIncome": "Net Income",
+      "roic": "ROIC",
+      "evic": "EV/IC",
+      "pe": "P/E",
+      "pb": "P/B",
+      "ps": "P/S",
+      "debtEquity": "D/E",
+      "fcf": "FCF",
+      "dataQuality": "Data Quality"
+    }
+  },
+  "sectors": {
+    "title": "Sectors",
+    "subtitle": "Saudi Exchange official sector breakdown",
+    "noData": "No sectors available",
+    "noDataDesc": "Run fetch_sectors pipeline to populate sector data"
+  },
+  "announcements": {
+    "title": "Announcements",
+    "subtitle": "Saudi Exchange company announcements",
+    "noData": "No announcements available",
+    "noDataDesc": "Run fetch_announcements pipeline to populate",
+    "filters": {
+      "symbol": "Symbol",
+      "type": "Type",
+      "hasXbrl": "Has XBRL",
+      "dateFrom": "From Date",
+      "dateTo": "To Date",
+      "keyword": "Keyword"
+    }
+  },
+  "dataQuality": {
+    "title": "Data Quality",
+    "subtitle": "Transparent data coverage and pipeline status",
+    "companies": "Companies",
+    "sectors": "Sectors",
+    "filings": "XBRL Filings",
+    "financials": "Financials",
+    "ratios": "Ratios",
+    "noData": "No data available — pipeline not configured"
+  },
+  "apiDocs": {
+    "title": "API Documentation",
+    "subtitle": "Mejhr financial data API",
+    "baseUrl": "Base URL",
+    "endpoints": "Endpoints"
+  },
+  "company": {
+    "notFound": "Company not found",
+    "overview": "Overview",
+    "financials": "Financials",
+    "filings": "XBRL Filings",
+    "dataQuality": "Data Quality Notes",
+    "market": "Market",
+    "sector": "Sector",
+    "mappingStatus": "Mapping Status",
+    "dataStatus": "Data Status"
+  },
+  "auth": {
+    "login": "Login",
+    "email": "Email",
+    "password": "Password",
+    "loginButton": "Sign In",
+    "noAccount": "No account?",
+    "register": "Register"
+  },
+  "admin": {
+    "title": "Admin Panel",
+    "jobs": "Import Jobs",
+    "triggerJob": "Trigger Job",
+    "noJobs": "No jobs run yet"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "empty": "No data",
+    "sampleWarning": "SAMPLE DATA — NOT OFFICIAL — For UI testing only",
+    "missing": "—",
+    "source": "Source",
+    "lastUpdated": "Last updated",
+    "page": "Page",
+    "of": "of",
+    "perPage": "Per page"
+  }
+}
