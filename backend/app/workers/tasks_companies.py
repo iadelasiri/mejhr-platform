@@ -31,11 +31,38 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.pool import NullPool
+
 from app.workers.celery_app import app as celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.config import settings
 from app.pipeline.exchange.companies import fetch_companies
 
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Task-local DB session factory (NullPool)
+# ---------------------------------------------------------------------------
+# Each Celery task calls asyncio.run() which creates and later destroys an
+# event loop.  SQLAlchemy's default QueuePool caches asyncpg connections that
+# are bound to the first loop; the next asyncio.run() call creates a NEW loop
+# and the cached connections raise "Future attached to a different loop".
+#
+# NullPool disables caching entirely: every session open creates a fresh TCP
+# connection and every close discards it.  There is no state shared between
+# asyncio.run() invocations, so no loop mismatch is possible.
+_connect_args: dict = {}
+if "pooler.supabase.com" in settings.DATABASE_URL:
+    _connect_args["prepared_statement_cache_size"] = 0
+
+_task_engine = create_async_engine(
+    settings.DATABASE_URL,
+    poolclass=NullPool,
+    connect_args=_connect_args,
+)
+AsyncSessionLocal = async_sessionmaker(
+    _task_engine, class_=AsyncSession, expire_on_commit=False
+)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +123,11 @@ async def _run_import(job_id: str) -> dict:
 
         try:
             # ── Step 2: fetch from Saudi Exchange ──────────────────────
-            result = fetch_companies()
+            # curl_cffi.requests.get() internally calls asyncio.run(), which
+            # would conflict with our already-running event loop.  Running the
+            # fetcher in a worker thread gives it an isolated event-loop
+            # namespace so it can use its own loop without interference.
+            result = await asyncio.to_thread(fetch_companies)
 
             stats["endpoint_reachable"] = result.reachable
             stats["endpoint_blocked"] = result.blocked
@@ -206,19 +237,27 @@ def fetch_saudi_exchange_companies_task(self, job_id: str | None = None):
     Returns the stats dict.  Always completes without raising so
     Celery marks the task as SUCCESS; the job record status field
     carries the real outcome.
+
+    Both _create_job and _run_import run inside a single asyncio.run()
+    call to avoid the "Future attached to a different loop" error that
+    occurs when two asyncio.run() calls in the same prefork worker
+    process each create and destroy an event loop, leaving asyncpg
+    connections cached from the first loop unusable in the second.
     """
-    if job_id is None:
-        job_id = asyncio.run(_create_job("scheduler", self.request.id))
+    _provided_job_id = job_id
+    _celery_task_id = self.request.id
 
-    log.info("tasks.fetch_companies started job_id=%s celery_task_id=%s",
-             job_id, self.request.id)
+    async def _execute() -> dict:
+        _job_id = _provided_job_id
+        if _job_id is None:
+            _job_id = await _create_job("scheduler", _celery_task_id)
+        return await _run_import(_job_id)
 
-    stats = asyncio.run(_run_import(job_id))
+    stats = asyncio.run(_execute())
 
     log.info(
-        "tasks.fetch_companies done job_id=%s "
+        "tasks.fetch_companies done "
         "found=%d inserted=%d updated=%d failed=%d blocked=%s",
-        job_id,
         stats["records_found"],
         stats["records_inserted"],
         stats["records_updated"],

@@ -37,10 +37,13 @@ from app.pipeline.exchange.client import SaudiExchangeClient
 log = logging.getLogger(__name__)
 
 # Field names that suggest a company record — used for heuristic detection.
-_COMPANY_FIELD_HINTS = frozenset(
-    ["symbol", "stockSymbol", "tickerSymbol", "nameAr", "arabicName",
-     "companyNameAr", "nameEn", "englishName", "tasi", "code"]
-)
+# Includes ThemeSearchUtilityServlet field names confirmed in Phase 2D.
+_COMPANY_FIELD_HINTS = frozenset([
+    "symbol", "stockSymbol", "tickerSymbol", "code", "tasi",
+    "nameAr", "arabicName", "companyNameAr", "companyNameAR",
+    "nameEn", "englishName", "companyNameEn", "companyNameEN",
+    "tradingNameEn", "tradingNameAr",
+])
 
 
 @dataclass

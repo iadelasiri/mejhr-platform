@@ -32,11 +32,12 @@ from app.pipeline.exchange.connectivity import test_connectivity
 
 log = logging.getLogger(__name__)
 
-# The factory-default path — if SAUDI_EXCHANGE_COMPANIES_PATH is still this,
-# the endpoint has not yet been verified on a GCC server.
-_DEFAULT_COMPANIES_PATH = (
-    "/wps/portal/saudiexchange/newsandreports/market-data/"
-    "trading-data/all-shares"
+# Phase 2D: ThemeSearchUtilityServlet confirmed as the companies data source.
+# companies.py hard-codes this URL; SAUDI_EXCHANGE_COMPANIES_PATH is no longer
+# used by the fetcher and this check now always passes.
+_CONFIRMED_COMPANIES_URL = (
+    "https://www.saudiexchange.sa"
+    "/tadawul.eportal.theme.helper/ThemeSearchUtilityServlet"
 )
 
 
@@ -167,26 +168,13 @@ def _check_saudi_exchange() -> tuple[CheckResult, CheckResult]:
 
 
 def _check_companies_path() -> CheckResult:
-    path = settings.SAUDI_EXCHANGE_COMPANIES_PATH
-    is_default = (path == _DEFAULT_COMPANIES_PATH)
-    if is_default:
-        return CheckResult(
-            "companies_endpoint",
-            False,
-            True,  # warning: endpoint not yet confirmed
-            (
-                "SAUDI_EXCHANGE_COMPANIES_PATH is still the unverified default. "
-                "On a GCC server, run: "
-                "python -m app.pipeline.exchange.endpoint_probe "
-                "then set SAUDI_EXCHANGE_COMPANIES_PATH to the confirmed path."
-            ),
-        )
     return CheckResult(
         "companies_endpoint",
         True,
         False,
-        f"SAUDI_EXCHANGE_COMPANIES_PATH is set to a non-default path: {path!r}. "
-        "Run endpoint_probe to confirm it returns company data.",
+        f"ThemeSearchUtilityServlet confirmed as companies data source (Phase 2D). "
+        f"URL: {_CONFIRMED_COMPANIES_URL}. "
+        "curl_cffi Chrome impersonation bypasses Akamai TLS fingerprint detection.",
     )
 
 

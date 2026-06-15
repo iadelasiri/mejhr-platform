@@ -28,6 +28,7 @@ app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_default_queue="default",  # match worker -Q default,pipeline,xbrl
     task_routes={
         "tasks.pipeline.*": {"queue": "pipeline"},
         "tasks.xbrl.*": {"queue": "xbrl"},

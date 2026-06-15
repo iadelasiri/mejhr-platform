@@ -190,38 +190,44 @@ async def test_connectivity_result_shape_when_dns_fails():
 # 6. Companies fetcher — honest empty result when blocked
 # ---------------------------------------------------------------------------
 
+class _MockCurlResp:
+    """Minimal curl_cffi response stand-in for companies fetcher tests."""
+    def __init__(self, status_code: int, content_type: str, body: bytes):
+        self.status_code = status_code
+        self.headers = {"content-type": content_type}
+        self._body = body
+
+    def json(self):
+        import json as _json
+        return _json.loads(self._body)
+
+
 @pytest.mark.asyncio
 async def test_companies_fetcher_blocked_returns_empty():
-    """Fetcher returns empty list with diagnostic when Saudi Exchange is blocked."""
+    """HTTP 403 from ThemeSearchUtilityServlet is treated as Akamai block."""
     from app.pipeline.exchange.companies import fetch_companies
 
-    fake_response = _make_httpx_response(
-        403, b"Access Denied",
-        {"server": "AkamaiGHost", "content-type": "text/html"},
-    )
+    mock_resp = _MockCurlResp(403, "text/html", b"Access Denied")
 
-    with patch("httpx.Client.get", return_value=fake_response):
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
         result = fetch_companies()
 
     assert result.companies == []
     assert result.blocked is True
     assert result.reachable is False
     assert result.status_code == 403
-    assert result.parse_note  # some human-readable message
-    assert "block" in result.parse_note.lower() or "Block" in result.parse_note
+    assert result.parse_note
+    assert "block" in result.parse_note.lower()
 
 
 @pytest.mark.asyncio
 async def test_companies_fetcher_html_response_returns_empty():
-    """HTML response (unrecognised endpoint) returns empty with diagnostic."""
+    """HTML response (servlet URL changed) returns empty with diagnostic."""
     from app.pipeline.exchange.companies import fetch_companies
 
-    fake_response = _make_httpx_response(
-        200, b"<html><body>Portal page</body></html>",
-        {"content-type": "text/html; charset=utf-8"},
-    )
+    mock_resp = _MockCurlResp(200, "text/html; charset=utf-8", b"<html><body>Portal</body></html>")
 
-    with patch("httpx.Client.get", return_value=fake_response):
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
         result = fetch_companies()
 
     assert result.companies == []
@@ -233,22 +239,27 @@ async def test_companies_fetcher_html_response_returns_empty():
 
 @pytest.mark.asyncio
 async def test_companies_fetcher_json_response_parsed():
-    """Valid JSON response with recognisable fields is parsed into CompanyRecords."""
+    """Valid ThemeSearchUtilityServlet JSON is parsed into CompanyRecords."""
     from app.pipeline.exchange.companies import fetch_companies
 
-    payload = json.dumps({
-        "data": [
-            {"symbol": "1010", "nameAr": "شركة الراجحي", "nameEn": "Al Rajhi", "market": "A"},
-            {"symbol": "2222", "nameAr": "أرامكو السعودية", "nameEn": "Saudi Aramco", "market": "A"},
-        ]
-    }).encode()
+    payload = json.dumps([
+        {
+            "symbol": "1010", "companyNameAR": "شركة الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+            "tradingNameEn": "AL RAJHI BANK", "tradingNameAr": "الراجحي",
+            "isin": "SA0007879097",
+        },
+        {
+            "symbol": "2222", "companyNameAR": "أرامكو السعودية",
+            "companyNameEN": "Saudi Aramco", "market_type": "M",
+            "tradingNameEn": "SAUDI ARAMCO", "tradingNameAr": "أرامكو",
+            "isin": "SA12I810E153",
+        },
+    ]).encode()
 
-    fake_response = _make_httpx_response(
-        200, payload,
-        {"content-type": "application/json"},
-    )
+    mock_resp = _MockCurlResp(200, "application/json", payload)
 
-    with patch("httpx.Client.get", return_value=fake_response):
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
         result = fetch_companies()
 
     assert result.reachable is True
@@ -264,12 +275,12 @@ async def test_companies_fetcher_json_response_parsed():
 
 @pytest.mark.asyncio
 async def test_companies_fetcher_network_error_returns_empty():
-    """Network error returns empty list with error message, not an exception."""
+    """Network exception from _http_get returns empty list with error, never raises."""
     from app.pipeline.exchange.companies import fetch_companies
 
-    with patch("httpx.Client.get", side_effect=httpx.ConnectError("refused")):
-        with patch("time.sleep"):
-            result = fetch_companies()
+    with patch("app.pipeline.exchange.companies._http_get",
+               side_effect=Exception("Connection refused")):
+        result = fetch_companies()
 
     assert result.companies == []
     assert result.reachable is False

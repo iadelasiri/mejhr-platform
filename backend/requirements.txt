@@ -32,6 +32,7 @@ celery[redis]==5.4.0
 
 # --- HTTP Client ---
 httpx==0.28.1
+curl-cffi==0.15.0
 
 # --- Utils ---
 python-dotenv==1.0.1
