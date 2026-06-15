@@ -1,4 +1,4 @@
-from sqlalchemy import String, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, text
+from sqlalchemy import String, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, BigInteger, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from datetime import datetime, date
@@ -16,9 +16,13 @@ class XBRLFiling(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
+    # company_id links to companies.id; populated during discovery
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("companies.id"), nullable=True, index=True
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # period: Q1 | Q2 | Q3 | Q4 | Annual | H1 | H2
+    # fiscal_period: Q1 | Q2 | Q3 | Q4 | Annual | H1 | H2  (maps to 'period' column)
     period: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # period_type: quarterly | annual | semi_annual
     period_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
@@ -26,16 +30,21 @@ class XBRLFiling(Base):
     period_status: Mapped[str] = mapped_column(String(50), nullable=False, default="confirmed")
     # language: ar | en
     language: Mapped[str | None] = mapped_column(String(10), nullable=True)
-    # filing_type: html | xhtml | xml | xbrl | xls | xlsx
+    # filing_type: xhtml | xml | xbrl | pdf
     filing_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # filing_url: direct URL to the XBRL/iXBRL file
     xbrl_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # source_url: announcement page from which the filing was discovered
     announcement_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     announcement_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("announcements.id"), nullable=True
     )
+    # announcement_date: when the filing was announced
     reported_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     # import_status: pending | downloaded | rendered | parsed | failed
     import_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    # data_status: official (all XBRL filings from Saudi Exchange are official)
+    data_status: Mapped[str] = mapped_column(String(50), nullable=False, default="official")
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False
@@ -45,7 +54,7 @@ class XBRLFiling(Base):
 
 
 class XBRLFile(Base):
-    """Downloaded or rendered XBRL file associated with a filing."""
+    """Downloaded XBRL file associated with a filing."""
 
     __tablename__ = "xbrl_files"
 
@@ -58,10 +67,15 @@ class XBRLFile(Base):
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     local_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     file_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    # download_status: pending | downloaded | failed
+    # file_hash: SHA-256 hex digest of the downloaded content — used for dedup
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # download_status: pending | downloaded | failed | skipped_duplicate
     download_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     # render_status: not_required | pending | rendered | failed
     render_status: Mapped[str] = mapped_column(String(50), nullable=False, default="not_required")
+    # data_status: official
+    data_status: Mapped[str] = mapped_column(String(50), nullable=False, default="official")
     error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
