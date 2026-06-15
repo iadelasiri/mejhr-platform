@@ -74,6 +74,14 @@ class XBRLFile(Base):
     download_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     # render_status: not_required | pending | rendered | failed
     render_status: Mapped[str] = mapped_column(String(50), nullable=False, default="not_required")
+    # rendered_path: path to the Playwright-rendered HTML snapshot (SA viewer only)
+    rendered_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # selected_sections: JSON list of section codes selected before rendering
+    selected_sections: Mapped[str | None] = mapped_column(String, nullable=True)
+    # rendered_at: timestamp when rendering completed
+    rendered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # render_warnings: semicolon-separated list of warnings (missing sections, etc.)
+    render_warnings: Mapped[str | None] = mapped_column(String, nullable=True)
     # data_status: official
     data_status: Mapped[str] = mapped_column(String(50), nullable=False, default="official")
     error_message: Mapped[str | None] = mapped_column(String(2000), nullable=True)

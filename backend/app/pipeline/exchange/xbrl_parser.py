@@ -27,6 +27,216 @@ import xml.etree.ElementTree as ET
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Saudi Exchange HTML viewer constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Marker bytes that identify a Saudi Exchange XBRL HTML viewer file
+_SA_VIEWER_MARKER = b"templateCheck-div"
+_SA_VIEWER_MARKER2 = b"templateIdClass"
+
+# Section class → statement_type mapping (also used by xbrl_renderer.py)
+_SA_SECTION_STMT_TYPE: dict[str, str] = {
+    "FilingInformation": "filing_info",
+    "IndependentAuditorsReport": "auditors_report",
+    "StatementOfFinancialPositionCurrentNonCurrent": "balance_sheet",
+    "StatementOfIncomeFunctionOfExpense": "income_statement",
+    "StatementOfOtherComprehensiveIncomeBeforeTax": "income_statement",
+    "StatementOfChangesInEquity": "changes_in_equity",
+    "StatementOfCashFlowsIndirectMethod": "cash_flow",
+    "NotesFormingPartOfAccounts": "notes",
+}
+
+# Balance sheet sections where the date is an instant (end-of-period snapshot)
+_SA_BS_SECTIONS = frozenset({
+    "StatementOfFinancialPositionCurrentNonCurrent",
+})
+
+# Sections whose table structure is narrative/notes — skip numeric extraction
+_SA_SKIP_PARSE_SECTIONS = frozenset({
+    "IndependentAuditorsReport",
+    "NotesFormingPartOfAccounts",
+})
+
+# Pre-compiled regexes for the SA viewer HTML parser.
+# Attribute quotes matched as ['""] to handle original single-quote HTML
+# and double-quote output from Playwright DOM serialisation.
+_Q = r"""['"]"""
+
+_SA_SECTION_DIV_RE = re.compile(
+    r"<div\s+class=" + _Q + r"(" + "|".join(_SA_SECTION_STMT_TYPE.keys()) + r")" + _Q + r"[\s>]",
+    re.DOTALL,
+)
+_SA_GRIDTABLE_RE = re.compile(
+    r"<table\s+class=" + _Q + r"gridtable" + _Q + r"[^>]*>(.*?)</table>",
+    re.DOTALL,
+)
+_SA_TBODY_RE = re.compile(r"<tbody[^>]*>(.*?)</tbody>", re.DOTALL)
+_SA_TR_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.DOTALL)
+_SA_TD_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL)
+_SA_DATE_RE = re.compile(r">(\d{4}-\d{2}-\d{2})<")
+_SA_ARB_SPAN_RE = re.compile(
+    r"<span\s+class=" + _Q + r"arb" + _Q + r">(.*?)</span>", re.DOTALL
+)
+_SA_TAG_RE = re.compile(r"<[^>]+>")
+_SA_ENTITY_RE = re.compile(r"&(?:#\d+|[a-zA-Z]+);")
+_SA_WHITESPACE_RE = re.compile(r"\s+")
+_SA_INDENT_RE = re.compile(r"^[\s ]+")  # strip leading &nbsp; / spaces used for indent
+
+
+def _sa_strip_html(fragment: str) -> str:
+    """Remove HTML tags, decode common entities, collapse whitespace."""
+    frag = fragment.replace("&nbsp;", " ").replace("&#160;", " ").replace("\u00a0", " ")
+    frag = _SA_ENTITY_RE.sub("", frag)
+    frag = _SA_TAG_RE.sub("", frag)
+    return _SA_WHITESPACE_RE.sub(" ", frag).strip()
+
+
+def _sa_label_from_td(td_inner: str) -> str:
+    """Extract Arabic label text from a label <td> (first column of a data row)."""
+    # Prefer text inside <span class='arb'>
+    m = _SA_ARB_SPAN_RE.search(td_inner)
+    raw = m.group(1) if m else td_inner
+    label = _sa_strip_html(raw)
+    # Strip leading non-breaking space indentation (used for tree indentation)
+    label = _SA_INDENT_RE.sub("", label).strip()
+    return label
+
+
+def _parse_sa_html_viewer(html_text: str) -> list[ParsedFact]:
+    """
+    Parse a Saudi Exchange XBRL HTML viewer file.
+
+    The viewer embeds all financial statement data in hidden <div> sections.
+    Each section contains a <table class='gridtable'> with:
+      - Two header rows: period start dates and period end dates
+      - A <tbody> with rows of (Arabic label, value_col1, value_col2, ...)
+
+    One ParsedFact is emitted per (section, label_row, period_column) where
+    the cell value is non-empty.  No normalization is performed.
+    """
+    facts: list[ParsedFact] = []
+
+    # Find all section div start positions
+    section_matches = list(_SA_SECTION_DIV_RE.finditer(html_text))
+    if not section_matches:
+        return facts
+
+    for idx, match in enumerate(section_matches):
+        section_class = match.group(1)
+        stmt_type = _SA_SECTION_STMT_TYPE.get(section_class, "unknown")
+        is_bs = section_class in _SA_BS_SECTIONS
+
+        if section_class in _SA_SKIP_PARSE_SECTIONS:
+            continue
+
+        # Section content: from end of opening div tag to next section start
+        sec_start = match.end()
+        sec_end = (
+            section_matches[idx + 1].start()
+            if idx + 1 < len(section_matches)
+            else len(html_text)
+        )
+        sec_html = html_text[sec_start:sec_end]
+
+        # Find the gridtable inside this section
+        gt_match = _SA_GRIDTABLE_RE.search(sec_html)
+        if not gt_match:
+            continue
+        grid_html = gt_match.group(1)
+
+        # Partition all <tr> rows into header rows (contain <th>) and data rows
+        # (contain <td>).  This handles two layouts:
+        #   - Original HTML: header <tr>s are before <tbody>, data <tr>s inside
+        #   - Playwright rendered HTML: ALL rows are wrapped in <tbody> elements;
+        #     header rows still use <th>, data rows use <td>.
+        all_rows = _SA_TR_RE.findall(grid_html)
+        th_rows = [r for r in all_rows if "<th" in r and "<td" not in r]
+        data_rows = [r for r in all_rows if "<td" in r]
+
+        # Date header rows: th_rows that contain date patterns
+        date_th_rows = [r for r in th_rows if _SA_DATE_RE.search(r)]
+
+        start_dates: list[date | None] = []
+        end_dates: list[date | None] = []
+
+        if len(date_th_rows) >= 1:
+            start_dates = [
+                _to_date(s) for s in _SA_DATE_RE.findall(date_th_rows[0])
+            ]
+        if len(date_th_rows) >= 2:
+            end_dates = [
+                _to_date(s) for s in _SA_DATE_RE.findall(date_th_rows[1])
+            ]
+
+        # Normalise to equal-length lists
+        n_periods = max(len(start_dates), len(end_dates))
+        if n_periods == 0:
+            continue
+
+        while len(start_dates) < n_periods:
+            start_dates.append(None)
+        while len(end_dates) < n_periods:
+            end_dates.append(None)
+
+        # Pre-compute context refs and period tuples
+        periods: list[tuple[date | None, date | None, date | None, str | None]] = []
+        for i in range(n_periods):
+            sd = start_dates[i]
+            ed = end_dates[i]
+            if is_bs:
+                # Balance sheet: instant snapshot at end date
+                instant = ed
+                ctx = f"INSTANT__{ed.isoformat()}" if ed else None
+            else:
+                instant = None
+                ctx = (
+                    f"PERIOD__{sd.isoformat() if sd else 'None'}"
+                    f"__{ed.isoformat() if ed else 'None'}"
+                )
+            periods.append((sd, ed, instant, ctx))
+
+        # Parse data rows
+
+        for row_html in data_rows:
+            tds = _SA_TD_RE.findall(row_html)
+            if not tds:
+                continue
+
+            # First td = label
+            label = _sa_label_from_td(tds[0])
+            if not label:
+                continue
+
+            value_tds = tds[1:]
+
+            for period_idx, (p_start, p_end, instant, ctx_ref) in enumerate(periods):
+                if period_idx >= len(value_tds):
+                    break
+
+                val_raw = _sa_strip_html(value_tds[period_idx])
+                if not val_raw:
+                    continue
+
+                facts.append(ParsedFact(
+                    concept_name=label[:500],
+                    concept_namespace="sa_xbrl_viewer",
+                    label_ar=label[:1000],
+                    label_en=None,
+                    value_raw=val_raw[:2000],
+                    value_numeric=_to_decimal(val_raw),
+                    unit_ref=None,
+                    decimals=None,
+                    context_ref=ctx_ref,
+                    period_start=p_start if not is_bs else None,
+                    period_end=p_end,
+                    instant_date=instant,
+                    statement_type=stmt_type,
+                ))
+
+    return facts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Namespace constants
 # ─────────────────────────────────────────────────────────────────────────────
 _XBRLI_NS = "http://www.xbrl.org/2003/instance"
@@ -315,6 +525,11 @@ def _extract_ns_map(content: bytes) -> dict[str, str]:
     return ns_map
 
 
+def _is_sa_html_viewer(content_head: bytes) -> bool:
+    """Return True if content looks like a Saudi Exchange XBRL HTML viewer file."""
+    return _SA_VIEWER_MARKER in content_head and _SA_VIEWER_MARKER2 in content_head
+
+
 def _is_ixbrl(root: ET.Element, content_head: bytes) -> bool:
     _, local = _split_clark(root.tag)
     if local.lower() in ("html", "xhtml"):
@@ -335,6 +550,11 @@ def parse_xbrl_file_bytes(content: bytes, extension: str = ".xbrl") -> ParseResu
     """
     Parse XBRL file from raw bytes.  Never raises — errors are returned in ParseResult.
 
+    Supported formats (detected automatically):
+      - Saudi Exchange XBRL HTML viewer (sa_html_viewer)
+      - Inline XBRL / iXBRL in XHTML (ixbrl)
+      - Standard XBRL XML instance document (xbrl_xml)
+
     Args:
         content:   Raw file bytes.
         extension: File extension hint (".xbrl", ".xml", ".xhtml", ".html").
@@ -345,6 +565,27 @@ def parse_xbrl_file_bytes(content: bytes, extension: str = ".xbrl") -> ParseResu
     if not content:
         return ParseResult(error="Empty file content", parse_note="empty", file_format="unknown")
 
+    content_head = content[:8192]
+
+    # ── 1. Saudi Exchange XBRL HTML viewer (must be checked before XML parsing)
+    if _is_sa_html_viewer(content_head):
+        try:
+            html_text = content.decode("utf-8", errors="replace")
+        except Exception as exc:
+            return ParseResult(
+                error=f"UTF-8 decode error: {exc}",
+                parse_note="decode_failed",
+                file_format="unknown",
+            )
+        facts = _parse_sa_html_viewer(html_text)
+        return ParseResult(
+            facts=facts,
+            error=None,
+            parse_note=f"Parsed {len(facts)} fact(s) as sa_html_viewer",
+            file_format="sa_html_viewer",
+        )
+
+    # ── 2. Standard XBRL XML or iXBRL (requires valid XML)
     ns_map = _extract_ns_map(content)
 
     try:
@@ -355,8 +596,6 @@ def parse_xbrl_file_bytes(content: bytes, extension: str = ".xbrl") -> ParseResu
             parse_note="xml_parse_failed",
             file_format="unknown",
         )
-
-    content_head = content[:4096]
 
     if _is_ixbrl(root, content_head):
         file_format = "ixbrl"

@@ -1,9 +1,11 @@
 """
-Celery tasks: XBRL discovery and download for Main Market companies.
+Celery tasks: XBRL discovery, download, render, and parse for Main Market companies.
 
 Task names:
   tasks.xbrl_discovery  — scan all Main Market companies, find XBRL filings
   tasks.xbrl_download   — download pending XBRL files, dedup by SHA-256
+  tasks.xbrl_render     — render SA XBRL HTML viewer files with Playwright
+  tasks.xbrl_parse      — parse XBRL/iXBRL/SA-viewer files into xbrl_raw_items
 
 Job stats contract (always present in ImportJob.stats):
 
@@ -12,18 +14,38 @@ Job stats contract (always present in ImportJob.stats):
     filings_found         int
     filings_inserted      int
     filings_updated       int
-    files_downloaded      int   (always 0 — download is a separate task)
-    files_skipped         int   (always 0 — download is a separate task)
+    files_downloaded      int   (always 0)
+    files_skipped         int   (always 0)
     endpoint_blocked      bool
     error                 str|None
 
   tasks.xbrl_download:
-    companies_scanned     int   (always 0 — discovery is a separate task)
+    companies_scanned     int   (always 0)
     filings_found         int   (always 0)
     filings_inserted      int   (always 0)
     filings_updated       int   (always 0)
     files_downloaded      int
     files_skipped         int   (hash-matched duplicates)
+    endpoint_blocked      bool
+    error                 str|None
+
+  tasks.xbrl_render:
+    files_scanned         int
+    files_rendered        int
+    files_skipped         int   (non-SA-viewer files)
+    files_failed          int
+    sections_found        int   (cumulative across all rendered files)
+    sections_missing      int
+    warnings              str|None
+    error                 str|None
+
+  tasks.xbrl_parse:
+    files_scanned         int
+    files_parsed          int
+    files_failed          int
+    facts_found           int
+    facts_inserted        int
+    facts_updated         int
     endpoint_blocked      bool
     error                 str|None
 """
@@ -42,7 +64,13 @@ from app.workers.celery_app import app as celery_app
 from app.core.config import settings
 from app.pipeline.exchange.xbrl_discovery import discover_filings
 from app.pipeline.exchange.xbrl_downloader import download_file
-from app.pipeline.exchange.xbrl_parser import parse_xbrl_file
+from app.pipeline.exchange.xbrl_parser import parse_xbrl_file, _is_sa_html_viewer
+from app.pipeline.exchange.xbrl_renderer import (
+    render_xbrl_html,
+    rendered_output_path,
+    sections_to_json,
+    REQUIRED_SECTIONS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -115,12 +143,16 @@ async def _update_job(
 # Discovery task
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _run_xbrl_discovery(job_id: str) -> dict:
+async def _run_xbrl_discovery(job_id: str, target_symbol: str | None = None) -> dict:
     """
     Async core for xbrl_discovery task.
 
-    Loads all Main Market companies, runs discover_filings() for each,
-    upserts XBRLFiling records (idempotent on symbol + xbrl_url).
+    Loads Main Market companies (optionally filtered to target_symbol),
+    runs discover_filings() for each, and upserts XBRLFiling records
+    (idempotent on symbol + xbrl_url).
+
+    Args:
+        target_symbol: If set, scan only this symbol. None = all tadawul companies.
     """
     from sqlalchemy import select
     from app.models.company import Company
@@ -136,10 +168,10 @@ async def _run_xbrl_discovery(job_id: str) -> dict:
 
     try:
         async with AsyncSessionLocal() as db:
-            # Load all Main Market (tadawul) companies
-            result = await db.execute(
-                select(Company).where(Company.market == "tadawul")
-            )
+            q = select(Company).where(Company.market == "tadawul")
+            if target_symbol:
+                q = q.where(Company.symbol == target_symbol)
+            result = await db.execute(q)
             companies = result.scalars().all()
 
         for company in companies:
@@ -156,8 +188,14 @@ async def _run_xbrl_discovery(job_id: str) -> dict:
                 stats["error"] = discovery.error
                 break
 
-            if not discovery.reachable and discovery.error:
-                log.warning("Discovery failed for %s: %s", symbol, discovery.error)
+            if discovery.error:
+                # Covers both unreachable (network error) and reachable-but-failed
+                # (e.g. HTTP 404 when the endpoint has changed, HTTP 5xx, etc.)
+                log.warning(
+                    "Discovery failed for %s (HTTP %s): %s",
+                    symbol, discovery.status_code, discovery.error,
+                )
+                stats["error"] = (stats["error"] or "") + f"{symbol}: {discovery.error}; "
                 continue
 
             stats["filings_found"] += len(discovery.filings)
@@ -222,13 +260,15 @@ async def _run_xbrl_discovery(job_id: str) -> dict:
 # Download task
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _run_xbrl_download(job_id: str) -> dict:
+async def _run_xbrl_download(job_id: str, target_symbol: str | None = None) -> dict:
     """
     Async core for xbrl_download task.
 
-    Finds all XBRLFiling records with import_status='pending',
-    downloads their files via the downloader, records XBRLFile rows,
-    and marks the filing as 'downloaded' when all files are done.
+    Finds pending XBRLFiling records (optionally filtered to target_symbol),
+    downloads their files, records XBRLFile rows, and marks filings as downloaded.
+
+    Args:
+        target_symbol: If set, download only filings for this symbol.
     """
     from sqlalchemy import select
     from app.models.xbrl import XBRLFiling, XBRLFile
@@ -243,9 +283,10 @@ async def _run_xbrl_download(job_id: str) -> dict:
 
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                select(XBRLFiling).where(XBRLFiling.import_status == "pending")
-            )
+            q = select(XBRLFiling).where(XBRLFiling.import_status == "pending")
+            if target_symbol:
+                q = q.where(XBRLFiling.symbol == target_symbol)
+            result = await db.execute(q)
             pending_filings = result.scalars().all()
 
         for filing in pending_filings:
@@ -350,9 +391,10 @@ async def _run_xbrl_download(job_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @celery_app.task(name="tasks.xbrl_discovery", bind=True)
-def xbrl_discovery_task(self, job_id: str | None = None):
+def xbrl_discovery_task(self, job_id: str | None = None, symbol: str | None = None):
     """
-    Discover XBRL filings for all Main Market companies.
+    Discover XBRL filings for Main Market companies.
+    symbol: optional — if provided, scan only that symbol.
     Returns the stats dict.
     """
     _provided_job_id = job_id
@@ -362,7 +404,7 @@ def xbrl_discovery_task(self, job_id: str | None = None):
         _job_id = _provided_job_id
         if _job_id is None:
             _job_id = await _create_job("xbrl_discovery", "scheduler", _celery_task_id)
-        return await _run_xbrl_discovery(_job_id)
+        return await _run_xbrl_discovery(_job_id, target_symbol=symbol)
 
     stats = asyncio.run(_execute())
 
@@ -379,9 +421,10 @@ def xbrl_discovery_task(self, job_id: str | None = None):
 
 
 @celery_app.task(name="tasks.xbrl_download", bind=True)
-def xbrl_download_task(self, job_id: str | None = None):
+def xbrl_download_task(self, job_id: str | None = None, symbol: str | None = None):
     """
     Download pending XBRL files (hash-based dedup).
+    symbol: optional — if provided, download only filings for that symbol.
     Returns the stats dict.
     """
     _provided_job_id = job_id
@@ -391,7 +434,7 @@ def xbrl_download_task(self, job_id: str | None = None):
         _job_id = _provided_job_id
         if _job_id is None:
             _job_id = await _create_job("xbrl_download", "scheduler", _celery_task_id)
-        return await _run_xbrl_download(_job_id)
+        return await _run_xbrl_download(_job_id, target_symbol=symbol)
 
     stats = asyncio.run(_execute())
 
@@ -401,6 +444,196 @@ def xbrl_download_task(self, job_id: str | None = None):
         stats["files_downloaded"],
         stats["files_skipped"],
         stats["endpoint_blocked"],
+    )
+    return stats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Render task (Phase 2E.1 — SA HTML viewer Playwright rendering)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EMPTY_RENDER_STATS: dict = {
+    "files_scanned": 0,
+    "files_rendered": 0,
+    "files_skipped": 0,
+    "files_failed": 0,
+    "sections_found": 0,
+    "sections_missing": 0,
+    "warnings": None,
+    "error": None,
+}
+
+
+async def _run_xbrl_render(job_id: str, target_symbol: str | None = None) -> dict:
+    """
+    Async core for xbrl_render task.
+
+    Finds downloaded XBRLFile records whose local file is an SA HTML viewer,
+    renders each with Playwright (select required sections → click submit →
+    capture HTML), and stores the rendered snapshot path + metadata.
+
+    Non-SA-viewer files are skipped (counted in files_skipped).
+
+    Args:
+        target_symbol: If set, render only files for this symbol.
+    """
+    from sqlalchemy import select, update
+    from app.models.xbrl import XBRLFile, XBRLFiling
+
+    stats = {**_EMPTY_RENDER_STATS}
+    start = datetime.now(timezone.utc)
+    all_warnings: list[str] = []
+
+    await _update_job(job_id, "running", stats, started_at=start)
+
+    final_status = "failed"
+
+    try:
+        async with AsyncSessionLocal() as db:
+            q = (
+                select(XBRLFile, XBRLFiling)
+                .join(XBRLFiling, XBRLFile.filing_id == XBRLFiling.id)
+                .where(XBRLFile.download_status == "downloaded")
+            )
+            if target_symbol:
+                q = q.where(XBRLFiling.symbol == target_symbol)
+            result = await db.execute(q)
+            rows = result.all()
+
+        for xbrl_file, filing in rows:
+            stats["files_scanned"] += 1
+
+            if not xbrl_file.local_path:
+                stats["files_skipped"] += 1
+                continue
+
+            local_path = Path(xbrl_file.local_path)
+
+            # Check if this is an SA HTML viewer file
+            try:
+                head = local_path.read_bytes()[:8192]
+            except OSError:
+                stats["files_skipped"] += 1
+                continue
+
+            if not _is_sa_html_viewer(head):
+                stats["files_skipped"] += 1
+                continue
+
+            # Already rendered — skip
+            if xbrl_file.rendered_path and Path(xbrl_file.rendered_path).exists():
+                stats["files_skipped"] += 1
+                log.debug("Already rendered: %s", xbrl_file.rendered_path)
+                continue
+
+            output_path = rendered_output_path(local_path)
+
+            render_result = await render_xbrl_html(
+                source_path=local_path,
+                output_path=output_path,
+                section_codes=REQUIRED_SECTIONS,
+            )
+
+            now = datetime.now(timezone.utc)
+
+            if render_result.error:
+                stats["files_failed"] += 1
+                all_warnings.append(f"{filing.symbol}: {render_result.error}")
+                log.warning(
+                    "Render failed for XBRLFile %s: %s", xbrl_file.id, render_result.error
+                )
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        update(XBRLFile)
+                        .where(XBRLFile.id == xbrl_file.id)
+                        .values(
+                            render_status="failed",
+                            error_message=(render_result.error or "")[:2000],
+                            render_warnings="; ".join(render_result.warnings) or None,
+                            rendered_at=now,
+                        )
+                    )
+                    await db.commit()
+                continue
+
+            stats["files_rendered"] += 1
+            stats["sections_found"] += len(render_result.sections_found)
+            stats["sections_missing"] += len(render_result.sections_missing)
+
+            if render_result.warnings:
+                all_warnings.extend(
+                    f"{filing.symbol}: {w}" for w in render_result.warnings
+                )
+
+            async with AsyncSessionLocal() as db:
+                await db.execute(
+                    update(XBRLFile)
+                    .where(XBRLFile.id == xbrl_file.id)
+                    .values(
+                        render_status="rendered",
+                        rendered_path=str(render_result.rendered_path),
+                        selected_sections=sections_to_json(render_result.sections_found),
+                        rendered_at=now,
+                        render_warnings=(
+                            "; ".join(render_result.warnings) if render_result.warnings else None
+                        ),
+                    )
+                )
+                await db.commit()
+
+            log.info(
+                "Rendered %s: %d sections found, %d missing",
+                filing.symbol,
+                len(render_result.sections_found),
+                len(render_result.sections_missing),
+            )
+
+        if all_warnings:
+            stats["warnings"] = "; ".join(all_warnings[:20])
+
+        final_status = "completed"
+
+    except Exception as exc:
+        log.exception("Unexpected error in xbrl_render job_id=%s", job_id)
+        stats["error"] = str(exc)
+        final_status = "failed"
+
+    end = datetime.now(timezone.utc)
+    await _update_job(
+        job_id, final_status, stats,
+        completed_at=end,
+        duration_seconds=int((end - start).total_seconds()),
+    )
+    return stats
+
+
+@celery_app.task(name="tasks.xbrl_render", bind=True)
+def xbrl_render_task(self, job_id: str | None = None, symbol: str | None = None):
+    """
+    Render SA XBRL HTML viewer files with Playwright.
+    symbol: optional — if provided, render only files for that symbol.
+    Returns the stats dict.
+    """
+    _provided_job_id = job_id
+    _celery_task_id = self.request.id
+
+    async def _execute() -> dict:
+        _job_id = _provided_job_id
+        if _job_id is None:
+            _job_id = await _create_job("xbrl_render", "scheduler", _celery_task_id)
+        return await _run_xbrl_render(_job_id, target_symbol=symbol)
+
+    stats = asyncio.run(_execute())
+
+    log.info(
+        "tasks.xbrl_render done "
+        "scanned=%d rendered=%d skipped=%d failed=%d sections_found=%d missing=%d",
+        stats["files_scanned"],
+        stats["files_rendered"],
+        stats["files_skipped"],
+        stats["files_failed"],
+        stats["sections_found"],
+        stats["sections_missing"],
     )
     return stats
 
@@ -421,16 +654,19 @@ _EMPTY_PARSE_STATS: dict = {
 }
 
 
-async def _run_xbrl_parse(job_id: str) -> dict:
+async def _run_xbrl_parse(job_id: str, target_symbol: str | None = None) -> dict:
     """
     Async core for xbrl_parse task.
 
-    Finds all XBRLFile records with download_status='downloaded', parses each
-    XBRL/iXBRL file, and upserts XBRLRawItem records.
+    Finds downloaded XBRLFile records (optionally filtered to target_symbol),
+    parses each XBRL/iXBRL file, and upserts XBRLRawItem records.
 
     Dedup key: (xbrl_file_id, concept_name, context_ref, unit_ref).
     Existing facts are updated; new facts are inserted.
     A single file parse failure is recorded and the task continues.
+
+    Args:
+        target_symbol: If set, parse only files for this symbol.
     """
     from sqlalchemy import select, update
     from app.models.xbrl import XBRLFile, XBRLFiling, XBRLRawItem
@@ -444,11 +680,14 @@ async def _run_xbrl_parse(job_id: str) -> dict:
 
     try:
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
+            q = (
                 select(XBRLFile, XBRLFiling)
                 .join(XBRLFiling, XBRLFile.filing_id == XBRLFiling.id)
                 .where(XBRLFile.download_status == "downloaded")
             )
+            if target_symbol:
+                q = q.where(XBRLFiling.symbol == target_symbol)
+            result = await db.execute(q)
             rows = result.all()
 
         for xbrl_file, filing in rows:
@@ -459,7 +698,11 @@ async def _run_xbrl_parse(job_id: str) -> dict:
                 log.warning("XBRLFile %s has no local_path — skipping", xbrl_file.id)
                 continue
 
-            file_path = Path(xbrl_file.local_path)
+            # Prefer the rendered snapshot for SA HTML viewer files
+            if xbrl_file.rendered_path and Path(xbrl_file.rendered_path).exists():
+                file_path = Path(xbrl_file.rendered_path)
+            else:
+                file_path = Path(xbrl_file.local_path)
 
             # Parse in a thread to keep the event loop free
             parse_result = await asyncio.to_thread(parse_xbrl_file, file_path)
@@ -566,9 +809,10 @@ async def _run_xbrl_parse(job_id: str) -> dict:
 
 
 @celery_app.task(name="tasks.xbrl_parse", bind=True)
-def xbrl_parse_task(self, job_id: str | None = None):
+def xbrl_parse_task(self, job_id: str | None = None, symbol: str | None = None):
     """
     Parse downloaded XBRL files into raw facts (xbrl_raw_items).
+    symbol: optional — if provided, parse only files for that symbol.
     Idempotent: re-running updates existing facts, does not duplicate.
     Returns the stats dict.
     """
@@ -579,7 +823,7 @@ def xbrl_parse_task(self, job_id: str | None = None):
         _job_id = _provided_job_id
         if _job_id is None:
             _job_id = await _create_job("xbrl_parse", "scheduler", _celery_task_id)
-        return await _run_xbrl_parse(_job_id)
+        return await _run_xbrl_parse(_job_id, target_symbol=symbol)
 
     stats = asyncio.run(_execute())
 
