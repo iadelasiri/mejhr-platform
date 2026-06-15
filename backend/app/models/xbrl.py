@@ -87,9 +87,8 @@ class XBRLFile(Base):
 
 class XBRLRawItem(Base):
     """
-    Raw line item extracted from an XBRL filing.
-    Every item retains its original label, section, and value.
-    Nothing is inferred or guessed at this stage.
+    Raw fact extracted from an XBRL or iXBRL filing.
+    Every field reflects the source file verbatim — nothing is inferred or normalised.
     """
 
     __tablename__ = "xbrl_raw_items"
@@ -103,24 +102,47 @@ class XBRLRawItem(Base):
     xbrl_file_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("xbrl_files.id"), nullable=True
     )
+    # company_id populated from xbrl_filings.company_id at parse time
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("companies.id"), nullable=True, index=True
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    # Saudi XBRL section codes: 300200=balance_sheet, 300300=income_statement, 300700=cash_flow, etc.
+    # concept_name: XBRL element local name (e.g. "Revenue", "Assets")
+    concept_name: Mapped[str] = mapped_column(String(500), nullable=False, default="", index=True)
+    # concept_namespace: full taxonomy namespace URI (e.g. "http://xbrl.ifrs.org/taxonomy/...")
+    concept_namespace: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    label_ar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    label_en: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # value_raw: verbatim string from the XBRL source (may be formatted, e.g. "1,234,567")
+    value_raw: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    # value_numeric: parsed numeric Decimal; None for non-numeric facts
+    value_numeric: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
+    # value: legacy alias for value_numeric (kept for backward compat)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
+    # unit_ref: resolved unit string (e.g. "iso4217:SAR")
+    unit_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="SAR")
+    decimals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # context_ref: raw context ID from XBRL source
+    context_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # instant_date: populated for XBRL instant contexts (balance sheet dates)
+    instant_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # fiscal_year / fiscal_period copied from the parent XBRLFiling at parse time
+    fiscal_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fiscal_period: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # statement_type: heuristic detection — balance_sheet | income_statement | cash_flow | unknown
+    statement_type: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    # Saudi XBRL section codes (populated in Phase 2G normalisation, not here)
     section_code: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     section_name_ar: Mapped[str | None] = mapped_column(String(500), nullable=True)
     section_name_en: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    # statement_type: balance_sheet | income_statement | cash_flow | changes_in_equity | notes | other
-    statement_type: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
-    label_ar: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    label_en: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    value: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
-    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="SAR")
-    decimals: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
-    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
-    # parse_confidence: 0.0 to 1.0
     parse_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     local_file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # data_status: official (all XBRL facts from Saudi Exchange)
+    data_status: Mapped[str] = mapped_column(String(50), nullable=False, default="official")
     # parse_status: extracted | mapped | unmatched | conflict
     parse_status: Mapped[str] = mapped_column(String(50), nullable=False, default="extracted")
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

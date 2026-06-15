@@ -42,6 +42,7 @@ from app.workers.celery_app import app as celery_app
 from app.core.config import settings
 from app.pipeline.exchange.xbrl_discovery import discover_filings
 from app.pipeline.exchange.xbrl_downloader import download_file
+from app.pipeline.exchange.xbrl_parser import parse_xbrl_file
 
 log = logging.getLogger(__name__)
 
@@ -400,5 +401,197 @@ def xbrl_download_task(self, job_id: str | None = None):
         stats["files_downloaded"],
         stats["files_skipped"],
         stats["endpoint_blocked"],
+    )
+    return stats
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parse task
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EMPTY_PARSE_STATS: dict = {
+    "files_scanned": 0,
+    "files_parsed": 0,
+    "files_failed": 0,
+    "facts_found": 0,
+    "facts_inserted": 0,
+    "facts_updated": 0,
+    "endpoint_blocked": False,
+    "error": None,
+}
+
+
+async def _run_xbrl_parse(job_id: str) -> dict:
+    """
+    Async core for xbrl_parse task.
+
+    Finds all XBRLFile records with download_status='downloaded', parses each
+    XBRL/iXBRL file, and upserts XBRLRawItem records.
+
+    Dedup key: (xbrl_file_id, concept_name, context_ref, unit_ref).
+    Existing facts are updated; new facts are inserted.
+    A single file parse failure is recorded and the task continues.
+    """
+    from sqlalchemy import select, update
+    from app.models.xbrl import XBRLFile, XBRLFiling, XBRLRawItem
+
+    stats = {**_EMPTY_PARSE_STATS}
+    start = datetime.now(timezone.utc)
+
+    await _update_job(job_id, "running", stats, started_at=start)
+
+    final_status = "failed"
+
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(XBRLFile, XBRLFiling)
+                .join(XBRLFiling, XBRLFile.filing_id == XBRLFiling.id)
+                .where(XBRLFile.download_status == "downloaded")
+            )
+            rows = result.all()
+
+        for xbrl_file, filing in rows:
+            stats["files_scanned"] += 1
+
+            if not xbrl_file.local_path:
+                stats["files_failed"] += 1
+                log.warning("XBRLFile %s has no local_path — skipping", xbrl_file.id)
+                continue
+
+            file_path = Path(xbrl_file.local_path)
+
+            # Parse in a thread to keep the event loop free
+            parse_result = await asyncio.to_thread(parse_xbrl_file, file_path)
+
+            if parse_result.error:
+                stats["files_failed"] += 1
+                log.warning("Parse failed for file %s: %s", xbrl_file.id, parse_result.error)
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        update(XBRLFile)
+                        .where(XBRLFile.id == xbrl_file.id)
+                        .values(error_message=parse_result.error[:2000])
+                    )
+                    await db.commit()
+                continue
+
+            stats["facts_found"] += len(parse_result.facts)
+
+            # Load existing dedup keys for this file
+            async with AsyncSessionLocal() as db:
+                existing_result = await db.execute(
+                    select(
+                        XBRLRawItem.concept_name,
+                        XBRLRawItem.context_ref,
+                        XBRLRawItem.unit_ref,
+                        XBRLRawItem.id,
+                    ).where(XBRLRawItem.xbrl_file_id == xbrl_file.id)
+                )
+                existing: dict[tuple, object] = {
+                    (row.concept_name, row.context_ref, row.unit_ref): row.id
+                    for row in existing_result
+                }
+
+            now = datetime.now(timezone.utc)
+
+            async with AsyncSessionLocal() as db:
+                for fact in parse_result.facts:
+                    key = (fact.concept_name, fact.context_ref, fact.unit_ref)
+
+                    if key in existing:
+                        await db.execute(
+                            update(XBRLRawItem)
+                            .where(XBRLRawItem.id == existing[key])
+                            .values(
+                                value_raw=fact.value_raw,
+                                value_numeric=fact.value_numeric,
+                                value=fact.value_numeric,
+                                period_start=fact.period_start,
+                                period_end=fact.period_end,
+                                instant_date=fact.instant_date,
+                                statement_type=fact.statement_type,
+                                imported_at=now,
+                            )
+                        )
+                        stats["facts_updated"] += 1
+                    else:
+                        db.add(XBRLRawItem(
+                            filing_id=filing.id,
+                            xbrl_file_id=xbrl_file.id,
+                            company_id=filing.company_id,
+                            symbol=filing.symbol,
+                            concept_name=fact.concept_name,
+                            concept_namespace=fact.concept_namespace,
+                            label_ar=fact.label_ar,
+                            label_en=fact.label_en,
+                            value_raw=fact.value_raw,
+                            value_numeric=fact.value_numeric,
+                            value=fact.value_numeric,
+                            unit_ref=fact.unit_ref,
+                            decimals=fact.decimals,
+                            context_ref=fact.context_ref,
+                            period_start=fact.period_start,
+                            period_end=fact.period_end,
+                            instant_date=fact.instant_date,
+                            fiscal_year=filing.fiscal_year,
+                            fiscal_period=filing.period,
+                            statement_type=fact.statement_type,
+                            source_url=filing.xbrl_url,
+                            local_file_path=str(file_path),
+                            data_status="official",
+                            parse_status="extracted",
+                            imported_at=now,
+                        ))
+                        stats["facts_inserted"] += 1
+
+                await db.commit()
+
+            stats["files_parsed"] += 1
+
+        final_status = "completed"
+
+    except Exception as exc:
+        log.exception("Unexpected error in xbrl_parse job_id=%s", job_id)
+        stats["error"] = str(exc)
+        final_status = "failed"
+
+    end = datetime.now(timezone.utc)
+    await _update_job(
+        job_id, final_status, stats,
+        completed_at=end,
+        duration_seconds=int((end - start).total_seconds()),
+    )
+    return stats
+
+
+@celery_app.task(name="tasks.xbrl_parse", bind=True)
+def xbrl_parse_task(self, job_id: str | None = None):
+    """
+    Parse downloaded XBRL files into raw facts (xbrl_raw_items).
+    Idempotent: re-running updates existing facts, does not duplicate.
+    Returns the stats dict.
+    """
+    _provided_job_id = job_id
+    _celery_task_id = self.request.id
+
+    async def _execute() -> dict:
+        _job_id = _provided_job_id
+        if _job_id is None:
+            _job_id = await _create_job("xbrl_parse", "scheduler", _celery_task_id)
+        return await _run_xbrl_parse(_job_id)
+
+    stats = asyncio.run(_execute())
+
+    log.info(
+        "tasks.xbrl_parse done "
+        "files_scanned=%d parsed=%d failed=%d "
+        "facts_found=%d inserted=%d updated=%d",
+        stats["files_scanned"],
+        stats["files_parsed"],
+        stats["files_failed"],
+        stats["facts_found"],
+        stats["facts_inserted"],
+        stats["facts_updated"],
     )
     return stats
