@@ -5,16 +5,16 @@ T = TypeVar("T")
 
 
 class LastImportJob(BaseModel):
-    """Summary of the most recent fetch_companies job, embedded in PipelineMeta."""
+    """Summary of the most recent import job, embedded in PipelineMeta."""
     job_id: str
-    status: str                  # pending | running | completed | failed
-    records_found: int
-    records_inserted: int
-    records_updated: int
+    status: str                    # pending | running | completed | failed
+    companies_found: int = 0
+    companies_inserted: int = 0
+    companies_updated: int = 0
     endpoint_blocked: bool
     error_message: str | None
-    started_at: str | None       # ISO-8601
-    completed_at: str | None     # ISO-8601
+    started_at: str | None         # ISO-8601
+    completed_at: str | None       # ISO-8601
     duration_seconds: int | None
 
 

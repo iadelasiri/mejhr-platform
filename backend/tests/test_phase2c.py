@@ -154,10 +154,10 @@ async def test_successful_json_import():
         from app.workers.tasks_companies import _run_import
         stats = await _run_import(job_id)
 
-    assert stats["records_found"] == 2
-    assert stats["records_inserted"] == 2
-    assert stats["records_updated"] == 0
-    assert stats["records_failed"] == 0
+    assert stats["companies_found"] == 2
+    assert stats["companies_inserted"] == 2
+    assert stats["companies_updated"] == 0
+    assert stats["companies_failed"] == 0
     assert stats["endpoint_blocked"] is False
     assert stats["endpoint_reachable"] is True
     assert stats["error"] is None
@@ -196,8 +196,8 @@ async def test_akamai_blocked_import():
 
     assert stats["endpoint_blocked"] is True
     assert stats["endpoint_reachable"] is False
-    assert stats["records_found"] == 0
-    assert stats["records_inserted"] == 0
+    assert stats["companies_found"] == 0
+    assert stats["companies_inserted"] == 0
     assert stats["error"] is not None
     # execute called at least twice: mark running + mark failed
     assert db.execute.call_count >= 2
@@ -244,8 +244,8 @@ async def test_html_non_json_response():
     # HTML response is "completed" — endpoint reachable, no block, just wrong format
     assert stats["endpoint_blocked"] is False
     assert stats["endpoint_reachable"] is True
-    assert stats["records_found"] == 0
-    assert stats["records_inserted"] == 0
+    assert stats["companies_found"] == 0
+    assert stats["companies_inserted"] == 0
     assert stats["error"] is None
     assert "HTML page" in stats["parse_note"]
     db.add.assert_not_called()
@@ -279,8 +279,8 @@ async def test_network_failure():
 
     assert stats["endpoint_blocked"] is False
     assert stats["endpoint_reachable"] is False
-    assert stats["records_found"] == 0
-    assert stats["records_inserted"] == 0
+    assert stats["companies_found"] == 0
+    assert stats["companies_inserted"] == 0
     assert stats["error"] == "[Errno 111] Connection refused"
     assert db.execute.call_count >= 2
     db.add.assert_not_called()
@@ -305,9 +305,9 @@ async def test_idempotent_upsert_first_run_inserts():
         from app.workers.tasks_companies import _run_import
         stats = await _run_import(job_id)
 
-    assert stats["records_inserted"] == 2
-    assert stats["records_updated"] == 0
-    assert stats["records_failed"] == 0
+    assert stats["companies_inserted"] == 2
+    assert stats["companies_updated"] == 0
+    assert stats["companies_failed"] == 0
 
 
 @pytest.mark.asyncio
@@ -325,9 +325,9 @@ async def test_idempotent_upsert_second_run_updates():
         from app.workers.tasks_companies import _run_import
         stats = await _run_import(job_id)
 
-    assert stats["records_inserted"] == 0
-    assert stats["records_updated"] == 2
-    assert stats["records_failed"] == 0
+    assert stats["companies_inserted"] == 0
+    assert stats["companies_updated"] == 2
+    assert stats["companies_failed"] == 0
     db.add.assert_not_called()
 
 
@@ -346,9 +346,9 @@ async def test_sample_company_not_overwritten():
         from app.workers.tasks_companies import _run_import
         stats = await _run_import(job_id)
 
-    assert stats["records_inserted"] == 0
-    assert stats["records_updated"] == 0
-    assert stats["records_failed"] == 0
+    assert stats["companies_inserted"] == 0
+    assert stats["companies_updated"] == 0
+    assert stats["companies_failed"] == 0
     db.add.assert_not_called()
 
 
@@ -372,10 +372,16 @@ async def test_import_job_stats_keys_present():
         stats = await _run_import(job_id)
 
     required_keys = {
-        "records_found",
-        "records_inserted",
-        "records_updated",
-        "records_failed",
+        "companies_found",
+        "companies_inserted",
+        "companies_updated",
+        "companies_failed",
+        "unmapped_sector_count",
+        "excluded_nomu_count",
+        "excluded_etfs",
+        "excluded_funds",
+        "excluded_sukuk_bonds",
+        "excluded_other_securities",
         "endpoint_reachable",
         "endpoint_blocked",
         "parse_note",
@@ -432,6 +438,64 @@ async def test_import_job_failed_on_block_sets_error():
     # error key must be non-None so it can be stored in ImportJob.error_message
     assert stats["error"] is not None
     assert stats["endpoint_blocked"] is True
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: NOMU exclusion and second-import idempotency
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_nomu_count_reported_in_stats():
+    """excluded_nomu is reflected in import stats from fetch result."""
+    from app.pipeline.exchange.companies import FetchResult as _FR
+
+    fetch_result = _FR(
+        companies=[],
+        reachable=True,
+        blocked=False,
+        status_code=200,
+        raw_format="json",
+        parse_note="0 companies. Excluded: 146 NOMU.",
+        error=None,
+        fetched_at=_now(),
+        excluded_nomu=146,
+    )
+    db = _make_db_all_inserts()
+    job_id = str(uuid.uuid4())
+
+    with (
+        patch("app.workers.tasks_companies.fetch_companies", return_value=fetch_result),
+        patch("app.workers.tasks_companies.AsyncSessionLocal", _session_factory(db)),
+    ):
+        from app.workers.tasks_companies import _run_import
+        stats = await _run_import(job_id)
+
+    assert stats["excluded_nomu_count"] == 146
+    assert stats["companies_inserted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_second_import_is_idempotent_for_main_market_companies():
+    """
+    Second import with same Main Market companies → updates only, no inserts.
+    excluded_nomu is carried through stats.
+    """
+    companies = _make_company_records(2)
+    fetch_result = _make_fetch_result(companies=companies)
+    db = _make_db_all_updates(existing_data_status="official")
+    job_id = str(uuid.uuid4())
+
+    with (
+        patch("app.workers.tasks_companies.fetch_companies", return_value=fetch_result),
+        patch("app.workers.tasks_companies.AsyncSessionLocal", _session_factory(db)),
+    ):
+        from app.workers.tasks_companies import _run_import
+        stats = await _run_import(job_id)
+
+    assert stats["companies_inserted"] == 0
+    assert stats["companies_updated"] == 2
+    assert stats["companies_failed"] == 0
+    assert stats["excluded_nomu_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -497,9 +561,9 @@ async def test_companies_api_import_failed_akamai():
     failed_job.status = "failed"
     failed_job.stats = {
         "endpoint_blocked": True,
-        "records_found": 0,
-        "records_inserted": 0,
-        "records_updated": 0,
+        "companies_found": 0,
+        "companies_inserted": 0,
+        "companies_updated": 0,
     }
     failed_job.error_message = "HTTP 403 with Akamai server header"
     failed_job.started_at = datetime.now(timezone.utc)

@@ -270,7 +270,7 @@ async def test_companies_fetcher_json_response_parsed():
     assert "2222" in symbols
     for c in result.companies:
         assert c.data_status == "official"
-        assert c.mapping_status == "pending_official_mapping"
+        assert c.mapping_status == "unmapped_sector"
 
 
 @pytest.mark.asyncio
@@ -288,7 +288,180 @@ async def test_companies_fetcher_network_error_returns_empty():
 
 
 # ---------------------------------------------------------------------------
-# 7. /api/v1/system/saudi-exchange-health — valid JSON shape
+# 7. Companies fetcher — security type and market exclusions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_reit_included_in_main_market_fetch():
+    """REIT (market_type='M') is included — REITs are listed on the Main Market."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "4330", "companyNameAR": "صندوق ريت الدار للإيجار",
+            "companyNameEN": "Dar Al Arkan REIT Fund", "market_type": "M",
+            "tradingNameEn": "DAR AL ARKAN REIT", "tradingNameAr": "ريت الدار",
+        },
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+            "tradingNameEn": "AL RAJHI BANK", "tradingNameAr": "الراجحي",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    symbols = {c.symbol for c in result.companies}
+    assert "4330" in symbols
+    assert "1010" in symbols
+    assert len(result.companies) == 2
+    assert result.excluded_nomu == 0
+
+
+@pytest.mark.asyncio
+async def test_nomu_excluded_from_fetcher():
+    """NOMU (market_type='S') is excluded by default; Main Market company is included."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "9510", "companyNameAR": "شركة نوّامي",
+            "companyNameEN": "Nawamy Co.", "market_type": "S",
+        },
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    symbols = {c.symbol for c in result.companies}
+    assert "1010" in symbols
+    assert "9510" not in symbols
+    assert len(result.companies) == 1
+    assert result.excluded_nomu == 1
+
+
+@pytest.mark.asyncio
+async def test_etf_excluded_from_fetcher():
+    """ETF (market_type='E') is excluded; Main Market company is included."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "9515", "companyNameAR": "صندوق المؤشر المتداول",
+            "companyNameEN": "Listed Index Fund ETF", "market_type": "E",
+        },
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    assert len(result.companies) == 1
+    assert result.excluded_etfs == 1
+
+
+@pytest.mark.asyncio
+async def test_fund_excluded_from_fetcher():
+    """Investment fund (market_type='F') is excluded; Main Market company is included."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "F001", "companyNameAR": "صندوق استثماري",
+            "companyNameEN": "Investment Fund", "market_type": "F",
+        },
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    assert len(result.companies) == 1
+    assert result.excluded_funds == 1
+
+
+@pytest.mark.asyncio
+async def test_sukuk_bond_excluded_from_fetcher():
+    """Bond/sukuk (market_type='B') is excluded; Main Market company is included."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "SA001", "companyNameAR": "صكوك أرامكو",
+            "companyNameEN": "Aramco Sukuk 2029", "market_type": "B",
+        },
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    assert len(result.companies) == 1
+    assert result.excluded_sukuk_bonds == 1
+
+
+@pytest.mark.asyncio
+async def test_main_market_company_included_in_fetcher():
+    """Main Market company (market_type='M') — including REITs — is included."""
+    from app.pipeline.exchange.companies import fetch_companies
+
+    payload = json.dumps([
+        {
+            "symbol": "1010", "companyNameAR": "مصرف الراجحي",
+            "companyNameEN": "Al Rajhi Bank", "market_type": "M",
+            "isin": "SA0007879097",
+        },
+        # REIT — should be INCLUDED (Main Market instrument)
+        {
+            "symbol": "4330", "companyNameAR": "صندوق ريت الدار",
+            "companyNameEN": "Saudi REIT Fund", "market_type": "M",
+        },
+        # NOMU — should be EXCLUDED
+        {
+            "symbol": "9510", "companyNameAR": "شركة نوّامي",
+            "companyNameEN": "Nawamy Co.", "market_type": "S",
+        },
+    ]).encode()
+
+    mock_resp = _MockCurlResp(200, "application/json", payload)
+
+    with patch("app.pipeline.exchange.companies._http_get", return_value=mock_resp):
+        result = fetch_companies()
+
+    symbols = {c.symbol for c in result.companies}
+    assert "1010" in symbols
+    assert "4330" in symbols     # REIT is in Main Market → included
+    assert "9510" not in symbols  # NOMU → excluded
+    assert len(result.companies) == 2
+    assert result.excluded_nomu == 1
+
+
+# ---------------------------------------------------------------------------
+# 8. /api/v1/system/saudi-exchange-health — valid JSON shape
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

@@ -5,9 +5,10 @@ Source:  ThemeSearchUtilityServlet
          https://www.saudiexchange.sa/tadawul.eportal.theme.helper/ThemeSearchUtilityServlet
 
 Returns a JSON array of ~1900 securities.
-Filter:  market_type == 'M' (Tadawul Main Market)
-         market_type == 'S' (NOMU Parallel Market)
-All other types (B=Bonds, D=Derivatives, E=ETFs, F=Funds, O=Options) are skipped.
+Filter:  market_type == 'M' (Tadawul Main Market / TASI) only.
+         REITs trade on the Main Market and are included.
+         NOMU (market_type='S'), ETFs, funds, bonds, derivatives are excluded.
+All other types (B=Bonds, D=Derivatives, E=ETFs, F=Funds, O=Options, S=NOMU) are skipped.
 
 Phase 2D confirmed: curl_cffi Chrome TLS impersonation bypasses Akamai bot detection.
 Standard httpx still blocked. This fetcher always uses curl_cffi.
@@ -35,8 +36,8 @@ SOURCE_URL = (
     "/tadawul.eportal.theme.helper/ThemeSearchUtilityServlet"
 )
 
-_EQUITY_MARKET_TYPES = frozenset({"M", "S"})
-_MARKET_TYPE_MAP = {"M": "tadawul", "S": "nomu"}
+_MAIN_MARKET_TYPE = "M"   # Tadawul Main Market / TASI (includes REITs)
+_MARKET_VALUE = "tadawul"
 
 
 @dataclass
@@ -50,7 +51,7 @@ class CompanyRecord:
     source_url: str
     imported_at: datetime
     data_status: str = "official"
-    mapping_status: str = "pending_official_mapping"
+    mapping_status: str = "unmapped_sector"
     isin: str | None = None
     trading_name_en: str | None = None
     trading_name_ar: str | None = None
@@ -66,6 +67,11 @@ class FetchResult:
     parse_note: str
     error: str | None
     fetched_at: str
+    excluded_nomu: int = 0
+    excluded_etfs: int = 0
+    excluded_funds: int = 0
+    excluded_sukuk_bonds: int = 0
+    excluded_other_securities: int = 0
 
 
 def _http_get(url: str):
@@ -175,25 +181,43 @@ def fetch_companies() -> FetchResult:
         )
 
     companies: list[CompanyRecord] = []
-    skipped = 0
+    excluded_nomu = 0
+    excluded_etfs = 0
+    excluded_funds = 0
+    excluded_sukuk_bonds = 0
+    excluded_other_securities = 0
 
     for entry in data:
         if not isinstance(entry, dict):
-            skipped += 1
+            excluded_other_securities += 1
             continue
 
         market_type = (entry.get("market_type") or "").strip()
-        if market_type not in _EQUITY_MARKET_TYPES:
-            skipped += 1
+        symbol = (entry.get("symbol") or "").strip()
+
+        if market_type == "S":
+            excluded_nomu += 1
+            continue
+        if market_type == "E":
+            excluded_etfs += 1
+            continue
+        if market_type in ("F", "C"):
+            excluded_funds += 1
+            continue
+        if market_type == "B":
+            excluded_sukuk_bonds += 1
+            continue
+        if market_type != _MAIN_MARKET_TYPE:
+            excluded_other_securities += 1
             continue
 
-        symbol = (entry.get("symbol") or "").strip()
+        # market_type == 'M' — Main Market / TASI (REITs included)
         arabic_name = (
             entry.get("companyNameAR") or entry.get("companyName") or ""
         ).strip()
 
         if not symbol or not arabic_name:
-            skipped += 1
+            excluded_other_securities += 1
             continue
 
         english_name = (entry.get("companyNameEN") or "").strip() or None
@@ -202,7 +226,7 @@ def fetch_companies() -> FetchResult:
             symbol=symbol,
             arabic_name=arabic_name,
             english_name=english_name,
-            market=_MARKET_TYPE_MAP.get(market_type),
+            market=_MARKET_VALUE,
             isin=(entry.get("isin") or "").strip() or None,
             trading_name_en=(entry.get("tradingNameEn") or "").strip() or None,
             trading_name_ar=(entry.get("tradingNameAr") or "").strip() or None,
@@ -211,14 +235,12 @@ def fetch_companies() -> FetchResult:
             imported_at=now,
         ))
 
-    main_count = sum(1 for c in companies if c.market == "tadawul")
-    nomu_count = sum(1 for c in companies if c.market == "nomu")
-
     parse_note = (
-        f"Parsed {len(companies)} equity companies "
-        f"({main_count} Tadawul, {nomu_count} NOMU) "
+        f"Parsed {len(companies)} Main Market (TASI) securities "
         f"from {len(data)} total securities. "
-        f"Skipped {skipped} non-equity entries (bonds, funds, derivatives, options)."
+        f"Excluded: {excluded_nomu} NOMU, {excluded_etfs} ETFs, "
+        f"{excluded_funds} funds, {excluded_sukuk_bonds} sukuk/bonds, "
+        f"{excluded_other_securities} other (derivatives, options)."
     )
 
     return FetchResult(
@@ -230,6 +252,11 @@ def fetch_companies() -> FetchResult:
         parse_note=parse_note,
         error=None,
         fetched_at=fetched_at,
+        excluded_nomu=excluded_nomu,
+        excluded_etfs=excluded_etfs,
+        excluded_funds=excluded_funds,
+        excluded_sukuk_bonds=excluded_sukuk_bonds,
+        excluded_other_securities=excluded_other_securities,
     )
 
 

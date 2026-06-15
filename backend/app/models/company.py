@@ -1,6 +1,6 @@
 from sqlalchemy import String, DateTime, ForeignKey, Date, Numeric, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from datetime import datetime, date
 from decimal import Decimal
 import uuid
@@ -38,6 +38,8 @@ class Company(Base):
     )
     # data_status: sample_not_official | official | pending
     data_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    # Provenance for sector mapping: {source_url, mapping_source, reviewed_at, confidence}
+    sector_mapping_info: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     last_updated: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

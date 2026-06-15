@@ -15,14 +15,20 @@ Design rules (Phase 2C):
     (even if records_found=0 — the endpoint was reachable but empty).
 
 Job stats contract (always present in ImportJob.stats):
-    records_found       int   — companies returned by the API
-    records_inserted    int   — new rows added to DB
-    records_updated     int   — existing rows refreshed in DB
-    records_failed      int   — rows that raised an upsert exception
-    endpoint_reachable  bool
-    endpoint_blocked    bool
-    parse_note          str
-    error               str|None
+    companies_found         int   — companies returned by the API
+    companies_inserted      int   — new rows added to DB
+    companies_updated       int   — existing rows refreshed in DB
+    companies_failed        int   — rows that raised an upsert exception
+    unmapped_sector_count   int   — companies lacking official sector mapping
+    excluded_nomu_count     int   — NOMU/parallel-market securities excluded
+    excluded_etfs           int   — ETFs excluded
+    excluded_funds          int   — funds/closed-end funds excluded
+    excluded_sukuk_bonds    int   — sukuk/bonds excluded
+    excluded_other_securities int — derivatives, options, other excluded
+    endpoint_reachable      bool
+    endpoint_blocked        bool
+    parse_note              str
+    error                   str|None
 """
 
 from __future__ import annotations
@@ -99,10 +105,16 @@ async def _run_import(job_id: str) -> dict:
     from app.models.job import ImportJob
 
     stats: dict = {
-        "records_found": 0,
-        "records_inserted": 0,
-        "records_updated": 0,
-        "records_failed": 0,
+        "companies_found": 0,
+        "companies_inserted": 0,
+        "companies_updated": 0,
+        "companies_failed": 0,
+        "unmapped_sector_count": 0,
+        "excluded_nomu_count": 0,
+        "excluded_etfs": 0,
+        "excluded_funds": 0,
+        "excluded_sukuk_bonds": 0,
+        "excluded_other_securities": 0,
         "endpoint_reachable": False,
         "endpoint_blocked": False,
         "parse_note": "",
@@ -132,7 +144,15 @@ async def _run_import(job_id: str) -> dict:
             stats["endpoint_reachable"] = result.reachable
             stats["endpoint_blocked"] = result.blocked
             stats["parse_note"] = result.parse_note
-            stats["records_found"] = len(result.companies)
+            stats["companies_found"] = len(result.companies)
+            # All companies from ThemeSearchUtilityServlet have no sector field —
+            # every company is unmapped until a sector import links them.
+            stats["unmapped_sector_count"] = len(result.companies)
+            stats["excluded_nomu_count"] = result.excluded_nomu
+            stats["excluded_etfs"] = result.excluded_etfs
+            stats["excluded_funds"] = result.excluded_funds
+            stats["excluded_sukuk_bonds"] = result.excluded_sukuk_bonds
+            stats["excluded_other_securities"] = result.excluded_other_securities
 
             # ── Step 3: determine final status before upsert ───────────
             if result.blocked:
@@ -171,7 +191,7 @@ async def _run_import(job_id: str) -> dict:
                             imported_at=rec.imported_at,
                         )
                         db.add(new_company)
-                        stats["records_inserted"] += 1
+                        stats["companies_inserted"] += 1
                     else:
                         # Safety guard: never overwrite sample records
                         # with official data — the reverse is also wrong.
@@ -188,11 +208,11 @@ async def _run_import(job_id: str) -> dict:
                         company.source_url = rec.source_url
                         company.data_status = rec.data_status
                         company.imported_at = rec.imported_at
-                        stats["records_updated"] += 1
+                        stats["companies_updated"] += 1
 
                 except Exception as exc:
                     log.error("Upsert failed for symbol %s: %s", rec.symbol, exc)
-                    stats["records_failed"] += 1
+                    stats["companies_failed"] += 1
 
             await db.commit()
 
@@ -257,11 +277,12 @@ def fetch_saudi_exchange_companies_task(self, job_id: str | None = None):
 
     log.info(
         "tasks.fetch_companies done "
-        "found=%d inserted=%d updated=%d failed=%d blocked=%s",
-        stats["records_found"],
-        stats["records_inserted"],
-        stats["records_updated"],
-        stats["records_failed"],
+        "found=%d inserted=%d updated=%d failed=%d blocked=%s unmapped=%d",
+        stats["companies_found"],
+        stats["companies_inserted"],
+        stats["companies_updated"],
+        stats["companies_failed"],
         stats["endpoint_blocked"],
+        stats["unmapped_sector_count"],
     )
     return stats

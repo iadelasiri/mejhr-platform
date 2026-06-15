@@ -25,9 +25,9 @@ def _last_import_job_summary(job: ImportJob) -> LastImportJob:
     return LastImportJob(
         job_id=str(job.id),
         status=job.status,
-        records_found=s.get("records_found", 0),
-        records_inserted=s.get("records_inserted", 0),
-        records_updated=s.get("records_updated", 0),
+        companies_found=s.get("companies_found", 0),
+        companies_inserted=s.get("companies_inserted", 0),
+        companies_updated=s.get("companies_updated", 0),
         endpoint_blocked=s.get("endpoint_blocked", False),
         error_message=job.error_message,
         started_at=job.started_at.isoformat() if job.started_at else None,
@@ -36,16 +36,66 @@ def _last_import_job_summary(job: ImportJob) -> LastImportJob:
     )
 
 
+@router.get("/unmapped", response_model=PaginatedResponse[CompanySummary])
+async def list_unmapped_companies(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return Main Market companies that have not yet been assigned a sector."""
+    query = (
+        select(Company)
+        .options(selectinload(Company.sector))
+        .where(Company.market == "tadawul")
+        .where(Company.mapping_status == "unmapped_sector")
+    )
+
+    count_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    total = count_result.scalar() or 0
+
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    result = await db.execute(query)
+    companies = result.scalars().all()
+
+    meta = PipelineMeta(
+        pipeline_status="populated" if total > 0 else "not_configured",
+        message=None,
+        sample_data=False,
+    )
+
+    rows = [
+        CompanySummary(
+            id=c.id,
+            symbol=c.symbol,
+            arabic_name=c.arabic_name,
+            english_name=c.english_name,
+            market=c.market,
+            sector_ar=None,
+            sector_en=None,
+            mapping_status=c.mapping_status,
+            data_status=c.data_status,
+        )
+        for c in companies
+    ]
+
+    return PaginatedResponse(data=rows, total=total, page=page, per_page=per_page, meta=meta)
+
+
 @router.get("/", response_model=PaginatedResponse[CompanySummary])
 async def list_companies(
     market: str | None = Query(None, description="Filter by market: tadawul or nomu"),
+    mapping_status: str | None = Query(None, description="Filter by mapping_status: mapped or unmapped_sector"),
     page: int = Query(1, ge=1),
     per_page: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Company).options(selectinload(Company.sector))
-    if market:
-        query = query.where(Company.market == market)
+    # Default to Main Market / TASI only. Use ?market=nomu to explicitly query NOMU.
+    effective_market = market or "tadawul"
+    query = query.where(Company.market == effective_market)
+
+    if mapping_status is not None:
+        query = query.where(Company.mapping_status == mapping_status)
 
     count_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = count_result.scalar() or 0
