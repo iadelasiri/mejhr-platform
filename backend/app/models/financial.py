@@ -69,6 +69,8 @@ class NormalizedFinancial(Base):
     dividends_paid: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
 
     # Normalization metadata
+    reporting_scale: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # normalization_status: pending | normalized | partial | conflict | failed
     normalization_status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
     missing_fields: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
