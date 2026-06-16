@@ -39,6 +39,7 @@ class NormalizedFinancial(Base):
     operating_profit: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     ebit: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     finance_cost: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
+    profit_before_tax: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     zakat_tax: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     net_income: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     eps: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)

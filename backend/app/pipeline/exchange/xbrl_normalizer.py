@@ -1,12 +1,17 @@
 """
-Phase 2G.1 — Limited normalization for Balance Sheet totals and Cash Flow totals.
+XBRL financial normalizer — Phase 2G.1 (BS + CF) and Phase 2G.2 (IS high-confidence).
 
-Scope (Phase 2G.1 only):
-  Balance Sheet:  total_assets, total_liabilities, equity
-  Cash Flow:      operating_cash_flow, investing_cash_flow, financing_cash_flow, capex
+Phase 2G.1 scope — Balance Sheet:  total_assets, total_liabilities, equity
+                  — Cash Flow:      operating_cash_flow, investing_cash_flow,
+                                    financing_cash_flow, capex
 
-Hard stops: no Income Statement normalization, no bank-specific fields, no ratios,
-no screener writes.  Values are stored in absolute SAR (value_numeric × scale).
+Phase 2G.2 scope — Income Statement (high-confidence only):
+                    finance_cost, profit_before_tax, zakat_tax, net_income
+                  — income_tax is logged in source_map["income_tax_detail"] when
+                    separately identifiable but has no schema column yet.
+
+Hard stops: no revenue / gross_profit / operating_profit, no ratios, no screener writes.
+Values are stored in absolute SAR (value_numeric × scale).
 """
 from __future__ import annotations
 
@@ -21,18 +26,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
 
-# ── Label maps ────────────────────────────────────────────────────────────────
-
-# Balance Sheet — field_name → (label_ar, negate)
+# ── Balance Sheet label map ───────────────────────────────────────────────────
+# field_name → (label_ar, negate)
 _BS_LABELS: dict[str, tuple[str, bool]] = {
     "total_assets":      ("إجمالي الموجودات", False),
     "total_liabilities": ("إجمالي المطلوبات", False),
     "equity":            ("إجمالي حقوق الملكية", False),
 }
 
-# Cash Flow — field_name → ordered list of (label_ar, negate); first match wins
-# capex: primary label is stored positive in source → negate to outflow convention.
-#        2222 fallback label 'نفقات رأسمالية' is already negative → keep as-is.
+# ── Cash Flow label map ───────────────────────────────────────────────────────
+# field_name → ordered list of (label_ar, negate); first label match wins.
+# capex primary label is stored positive in SA viewer → negate to outflow convention.
+# 2222 fallback label 'نفقات رأسمالية' is already negative → keep as-is.
 _CF_LABELS: dict[str, list[tuple[str, bool]]] = {
     "operating_cash_flow": [
         ("صافي التدفقات النقدية من (المستخدمة في) النشاطات التشغيلية", False),
@@ -49,6 +54,39 @@ _CF_LABELS: dict[str, list[tuple[str, bool]]] = {
     ],
 }
 
+# ── Income Statement label map ────────────────────────────────────────────────
+# field_name → ordered list of (label_ar, negate); first match wins.
+#
+# finance_cost: stored positive (expense magnitude); not present in bank IS.
+# profit_before_tax: bank (1120) uses a different label order.
+# zakat_tax: 2222 uses combined ضرائب الدخل والزكاة; others use the zakat-only label.
+#            2050-2025 has a negative zakat value (credit) — stored as-is.
+# net_income: prefer continuing-operations label; fall back to period total.
+#             When continuing-ops ≠ total, both are preserved in source_map.
+_IS_LABELS: dict[str, list[tuple[str, bool]]] = {
+    "finance_cost": [
+        ("تكلفة تمويل", False),
+    ],
+    "profit_before_tax": [
+        ("الربح (الخسارة) قبل الزكاة وضريبة الدخل من العمليات المستمرة", False),
+        ("الربح (الخسارة) من العمليات المستمرة قبل الزكاة وضريبة الدخل", False),
+    ],
+    "zakat_tax": [
+        ("مصاريف الزكاة على العمليات المستمرة للفترة", False),
+        ("ضرائب الدخل والزكاة", False),
+    ],
+    "net_income": [
+        ("ربح (خسارة) الفترة من العمليات المستمرة", False),
+        ("ربح (خسارة) الفترة", False),
+    ],
+}
+
+# Income-tax-only label — no schema column; logged in source_map detail only.
+_INCOME_TAX_LABEL = "ضريبة الدخل على العمليات المستمرة للفترة"
+# Used to detect when continuing-ops was used so we can also log the total.
+_NET_INCOME_CONTINUING_LABEL = "ربح (خسارة) الفترة من العمليات المستمرة"
+_NET_INCOME_TOTAL_LABEL = "ربح (خسارة) الفترة"
+
 _SCALE_LABEL = "مستوى التقريب المستخدم في القوائم المالية"
 
 # ── Internal result types ─────────────────────────────────────────────────────
@@ -60,6 +98,7 @@ class _Match:
     raw_item_id: str
     label_ar: str
     context_ref: str | None
+
 
 @dataclass
 class _Conflict:
@@ -134,7 +173,7 @@ async def _get_filing_metadata(db: AsyncSession, symbol: str) -> dict | None:
     }
 
 
-# ── Field resolution ──────────────────────────────────────────────────────────
+# ── Field resolvers ───────────────────────────────────────────────────────────
 
 def _resolve_bs(
     field_name: str,
@@ -143,6 +182,7 @@ def _resolve_bs(
     facts: list,
     period_end: date,
 ) -> _Match | _Conflict | None:
+    """Resolve a balance-sheet field: instant_date == period_end."""
     candidates = [
         f for f in facts
         if f.label_ar == label_ar
@@ -167,10 +207,9 @@ def _resolve_bs(
             ],
         )
     c = candidates[0]
-    val = -c.value_numeric if negate else c.value_numeric
     return _Match(
         field_name=field_name,
-        value=val,
+        value=-c.value_numeric if negate else c.value_numeric,
         raw_item_id=str(c.id),
         label_ar=c.label_ar,
         context_ref=c.context_ref,
@@ -184,11 +223,39 @@ def _resolve_cf(
     period_start: date,
     period_end: date,
 ) -> _Match | _Conflict | None:
+    """Resolve a cash-flow field: statement_type='cash_flow', period filter."""
+    return _resolve_duration(field_name, label_specs, facts, period_start, period_end, "cash_flow")
+
+
+def _resolve_is(
+    field_name: str,
+    label_specs: list[tuple[str, bool]],
+    facts: list,
+    period_start: date,
+    period_end: date,
+) -> _Match | _Conflict | None:
+    """Resolve an income-statement field: statement_type='income_statement', period filter."""
+    return _resolve_duration(field_name, label_specs, facts, period_start, period_end, "income_statement")
+
+
+def _resolve_duration(
+    field_name: str,
+    label_specs: list[tuple[str, bool]],
+    facts: list,
+    period_start: date,
+    period_end: date,
+    statement_type: str,
+) -> _Match | _Conflict | None:
+    """
+    Try each (label_ar, negate) in order; return first match.
+    Deduplicates by value — multiple rows with identical value count as one.
+    Multiple rows with different values → Conflict.
+    """
     for label_ar, negate in label_specs:
         candidates = [
             f for f in facts
             if f.label_ar == label_ar
-            and f.statement_type == "cash_flow"
+            and f.statement_type == statement_type
             and f.period_start == period_start
             and f.period_end == period_end
             and f.value_numeric is not None
@@ -210,10 +277,9 @@ def _resolve_cf(
                 ],
             )
         c = candidates[0]
-        val = -c.value_numeric if negate else c.value_numeric
         return _Match(
             field_name=field_name,
-            value=val,
+            value=-c.value_numeric if negate else c.value_numeric,
             raw_item_id=str(c.id),
             label_ar=c.label_ar,
             context_ref=c.context_ref,
@@ -248,6 +314,7 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
     conflict_list: list[_Conflict] = []
     missing: list[str] = []
 
+    # ── Balance Sheet ────────────────────────────────────────────────────────
     for field_name, (label_ar, negate) in _BS_LABELS.items():
         r = _resolve_bs(field_name, label_ar, negate, all_facts, p_end)
         if isinstance(r, _Match):
@@ -257,6 +324,7 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
         else:
             missing.append(field_name)
 
+    # ── Cash Flow ────────────────────────────────────────────────────────────
     for field_name, label_specs in _CF_LABELS.items():
         r = _resolve_cf(field_name, label_specs, all_facts, p_start, p_end)
         if isinstance(r, _Match):
@@ -266,6 +334,17 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
         else:
             missing.append(field_name)
 
+    # ── Income Statement ─────────────────────────────────────────────────────
+    for field_name, label_specs in _IS_LABELS.items():
+        r = _resolve_is(field_name, label_specs, all_facts, p_start, p_end)
+        if isinstance(r, _Match):
+            matches[field_name] = r
+        elif isinstance(r, _Conflict):
+            conflict_list.append(r)
+        else:
+            missing.append(field_name)
+
+    # ── Scale and source_map ─────────────────────────────────────────────────
     field_values: dict[str, Decimal] = {
         fn: m.value * scale for fn, m in matches.items()
     }
@@ -278,6 +357,49 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
         for fn, m in matches.items()
     }
 
+    # ── Supplemental: log total net_income when continuing-ops label was used ─
+    ni_match = matches.get("net_income")
+    if ni_match and ni_match.label_ar == _NET_INCOME_CONTINUING_LABEL:
+        total_facts = [
+            f for f in all_facts
+            if f.label_ar == _NET_INCOME_TOTAL_LABEL
+            and f.statement_type == "income_statement"
+            and f.period_start == p_start
+            and f.period_end == p_end
+            and f.value_numeric is not None
+        ]
+        if total_facts:
+            total_unique = {f.value_numeric for f in total_facts}
+            if len(total_unique) == 1:
+                total_scaled = list(total_unique)[0] * scale
+                if total_scaled != field_values["net_income"]:
+                    source_map["net_income_total"] = {
+                        "raw_item_id": str(total_facts[0].id),
+                        "label_ar": _NET_INCOME_TOTAL_LABEL,
+                        "context_ref": total_facts[0].context_ref,
+                        "value_scaled": float(total_scaled),
+                    }
+
+    # ── Supplemental: log income_tax detail when separately available ─────────
+    it_facts = [
+        f for f in all_facts
+        if f.label_ar == _INCOME_TAX_LABEL
+        and f.statement_type == "income_statement"
+        and f.period_start == p_start
+        and f.period_end == p_end
+        and f.value_numeric is not None
+    ]
+    if it_facts:
+        it_unique = {f.value_numeric for f in it_facts}
+        if len(it_unique) == 1:
+            source_map["income_tax_detail"] = {
+                "raw_item_id": str(it_facts[0].id),
+                "label_ar": _INCOME_TAX_LABEL,
+                "context_ref": it_facts[0].context_ref,
+                "value_scaled": float(list(it_unique)[0] * scale),
+            }
+
+    # ── Status ───────────────────────────────────────────────────────────────
     if conflict_list:
         status = "conflict"
     elif missing:
@@ -285,14 +407,15 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
     else:
         status = "normalized"
 
+    # ── BS validation ─────────────────────────────────────────────────────────
     bs_valid: bool | None = None
     if all(k in field_values for k in ("total_assets", "total_liabilities", "equity")):
         ta = field_values["total_assets"]
-        diff_ratio = abs(ta - (field_values["total_liabilities"] + field_values["equity"])) / ta if ta else None
-        if diff_ratio is not None:
+        if ta:
+            diff_ratio = abs(ta - (field_values["total_liabilities"] + field_values["equity"])) / ta
             bs_valid = diff_ratio < Decimal("0.001")
 
-    # Upsert — SELECT then INSERT-or-UPDATE (avoids NULL unique-constraint edge cases)
+    # ── Upsert ────────────────────────────────────────────────────────────────
     existing_row = await db.execute(
         select(NormalizedFinancial.id)
         .where(NormalizedFinancial.symbol == symbol)
@@ -333,7 +456,7 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
 
     await db.commit()
 
-    # Replace conflicts for this record
+    # ── Conflicts ─────────────────────────────────────────────────────────────
     await db.execute(
         delete(NormalizationConflict).where(
             NormalizationConflict.normalized_financial_id == nf_id
