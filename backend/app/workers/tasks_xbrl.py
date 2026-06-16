@@ -44,8 +44,8 @@ Job stats contract (always present in ImportJob.stats):
     files_parsed          int
     files_failed          int
     facts_found           int
-    facts_inserted        int
-    facts_updated         int
+    facts_inserted        int   (replaces all previous facts for the file)
+    facts_updated         int   (always 0 — delete-then-insert strategy)
     endpoint_blocked      bool
     error                 str|None
 """
@@ -659,11 +659,12 @@ async def _run_xbrl_parse(job_id: str, target_symbol: str | None = None) -> dict
     Async core for xbrl_parse task.
 
     Finds downloaded XBRLFile records (optionally filtered to target_symbol),
-    parses each XBRL/iXBRL file, and upserts XBRLRawItem records.
+    parses each XBRL/iXBRL file, and replaces XBRLRawItem records atomically.
 
-    Dedup key: (xbrl_file_id, concept_name, context_ref, unit_ref).
-    Existing facts are updated; new facts are inserted.
-    A single file parse failure is recorded and the task continues.
+    Idempotent: for each file, deletes all existing raw items then inserts the
+    fresh parse result in a single transaction.  This prevents duplicates from
+    concurrent re-runs and preserves all column values from multi-column tables
+    (e.g. changes_in_equity) that share the same concept_name+context_ref key.
 
     Args:
         target_symbol: If set, parse only files for this symbol.
@@ -721,74 +722,57 @@ async def _run_xbrl_parse(job_id: str, target_symbol: str | None = None) -> dict
 
             stats["facts_found"] += len(parse_result.facts)
 
-            # Load existing dedup keys for this file
-            async with AsyncSessionLocal() as db:
-                existing_result = await db.execute(
-                    select(
-                        XBRLRawItem.concept_name,
-                        XBRLRawItem.context_ref,
-                        XBRLRawItem.unit_ref,
-                        XBRLRawItem.id,
-                    ).where(XBRLRawItem.xbrl_file_id == xbrl_file.id)
-                )
-                existing: dict[tuple, object] = {
-                    (row.concept_name, row.context_ref, row.unit_ref): row.id
-                    for row in existing_result
-                }
-
             now = datetime.now(timezone.utc)
 
+            # Idempotent delete-then-insert: atomically replace all raw items for
+            # this xbrl_file_id so concurrent re-runs never produce duplicates.
+            # The SA viewer produces non-unique (concept_name, context_ref, unit_ref)
+            # keys within the changes_in_equity table (one row per equity column),
+            # so a read-modify-write dedup would silently collapse those columns.
+            # Delete-then-insert preserves all column values and is race-safe.
             async with AsyncSessionLocal() as db:
+                from sqlalchemy import delete as sa_delete
+                del_result = await db.execute(
+                    sa_delete(XBRLRawItem).where(
+                        XBRLRawItem.xbrl_file_id == xbrl_file.id
+                    )
+                )
+                deleted_count = del_result.rowcount
                 for fact in parse_result.facts:
-                    key = (fact.concept_name, fact.context_ref, fact.unit_ref)
-
-                    if key in existing:
-                        await db.execute(
-                            update(XBRLRawItem)
-                            .where(XBRLRawItem.id == existing[key])
-                            .values(
-                                value_raw=fact.value_raw,
-                                value_numeric=fact.value_numeric,
-                                value=fact.value_numeric,
-                                period_start=fact.period_start,
-                                period_end=fact.period_end,
-                                instant_date=fact.instant_date,
-                                statement_type=fact.statement_type,
-                                imported_at=now,
-                            )
-                        )
-                        stats["facts_updated"] += 1
-                    else:
-                        db.add(XBRLRawItem(
-                            filing_id=filing.id,
-                            xbrl_file_id=xbrl_file.id,
-                            company_id=filing.company_id,
-                            symbol=filing.symbol,
-                            concept_name=fact.concept_name,
-                            concept_namespace=fact.concept_namespace,
-                            label_ar=fact.label_ar,
-                            label_en=fact.label_en,
-                            value_raw=fact.value_raw,
-                            value_numeric=fact.value_numeric,
-                            value=fact.value_numeric,
-                            unit_ref=fact.unit_ref,
-                            decimals=fact.decimals,
-                            context_ref=fact.context_ref,
-                            period_start=fact.period_start,
-                            period_end=fact.period_end,
-                            instant_date=fact.instant_date,
-                            fiscal_year=filing.fiscal_year,
-                            fiscal_period=filing.period,
-                            statement_type=fact.statement_type,
-                            source_url=filing.xbrl_url,
-                            local_file_path=str(file_path),
-                            data_status="official",
-                            parse_status="extracted",
-                            imported_at=now,
-                        ))
-                        stats["facts_inserted"] += 1
-
+                    db.add(XBRLRawItem(
+                        filing_id=filing.id,
+                        xbrl_file_id=xbrl_file.id,
+                        company_id=filing.company_id,
+                        symbol=filing.symbol,
+                        concept_name=fact.concept_name,
+                        concept_namespace=fact.concept_namespace,
+                        label_ar=fact.label_ar,
+                        label_en=fact.label_en,
+                        value_raw=fact.value_raw,
+                        value_numeric=fact.value_numeric,
+                        value=fact.value_numeric,
+                        unit_ref=fact.unit_ref,
+                        decimals=fact.decimals,
+                        context_ref=fact.context_ref,
+                        period_start=fact.period_start,
+                        period_end=fact.period_end,
+                        instant_date=fact.instant_date,
+                        fiscal_year=filing.fiscal_year,
+                        fiscal_period=filing.period,
+                        statement_type=fact.statement_type,
+                        source_url=filing.xbrl_url,
+                        local_file_path=str(file_path),
+                        data_status="official",
+                        parse_status="extracted",
+                        imported_at=now,
+                    ))
+                    stats["facts_inserted"] += 1
                 await db.commit()
+                if deleted_count:
+                    log.info(
+                        "parse: replaced %d stale facts with %d fresh facts for file %s",
+                        deleted_count, len(parse_result.facts), xbrl_file.id,
+                    )
 
             stats["files_parsed"] += 1
 
@@ -830,12 +814,11 @@ def xbrl_parse_task(self, job_id: str | None = None, symbol: str | None = None):
     log.info(
         "tasks.xbrl_parse done "
         "files_scanned=%d parsed=%d failed=%d "
-        "facts_found=%d inserted=%d updated=%d",
+        "facts_found=%d inserted=%d",
         stats["files_scanned"],
         stats["files_parsed"],
         stats["files_failed"],
         stats["facts_found"],
         stats["facts_inserted"],
-        stats["facts_updated"],
     )
     return stats

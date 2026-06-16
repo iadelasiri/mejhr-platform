@@ -125,6 +125,28 @@ def _make_company_mock(symbol: str = "1010") -> MagicMock:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 0. Broken endpoint fast-fail
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_xbrl_discovery_broken_endpoint_returns_immediately():
+    """
+    When _ANNOUNCEMENT_SEARCH_BROKEN is True (current production state),
+    discover_filings returns a DiscoveryResult without making any HTTP request.
+    """
+    from app.pipeline.exchange.xbrl_discovery import discover_filings
+
+    with patch("app.pipeline.exchange.xbrl_discovery._http_get") as mock_get:
+        result = discover_filings("2010")
+
+    mock_get.assert_not_called()
+    assert result.reachable is False
+    assert result.blocked is False
+    assert result.filings == []
+    assert result.error is not None
+    assert "endpoint_unavailable" in result.error
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 1. XBRL discovery success
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -133,13 +155,15 @@ async def test_xbrl_discovery_success():
     """
     discover_filings parses announcements API response and returns
     DiscoveredFiling records for all XBRL attachments in Financial Statement
-    announcements.
+    announcements.  Patches _ANNOUNCEMENT_SEARCH_BROKEN=False to test the
+    working-API code path (endpoint is currently broken in production).
     """
     from app.pipeline.exchange.xbrl_discovery import discover_filings
 
     resp = _make_discovery_response(symbol="1010", num_filings=3)
 
-    with patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=resp):
+    with patch("app.pipeline.exchange.xbrl_discovery._ANNOUNCEMENT_SEARCH_BROKEN", False), \
+         patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=resp):
         result = discover_filings("1010")
 
     assert result.reachable is True
@@ -184,7 +208,8 @@ async def test_xbrl_discovery_no_filings():
         ],
     }
 
-    with patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=resp):
+    with patch("app.pipeline.exchange.xbrl_discovery._ANNOUNCEMENT_SEARCH_BROKEN", False), \
+         patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=resp):
         result = discover_filings("9999")
 
     assert result.reachable is True
@@ -234,6 +259,7 @@ async def test_xbrl_discovery_duplicate_filing_skipped():
     job_id = str(uuid.uuid4())
 
     with (
+        patch("app.pipeline.exchange.xbrl_discovery._ANNOUNCEMENT_SEARCH_BROKEN", False),
         patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=discovery_resp),
         patch("app.workers.tasks_xbrl.AsyncSessionLocal", _session_factory(db)),
     ):
@@ -337,7 +363,8 @@ async def test_xbrl_discovery_blocked_403():
 
     blocked_resp = _make_discovery_response(symbol="1010", blocked=True)
 
-    with patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=blocked_resp):
+    with patch("app.pipeline.exchange.xbrl_discovery._ANNOUNCEMENT_SEARCH_BROKEN", False), \
+         patch("app.pipeline.exchange.xbrl_discovery._http_get", return_value=blocked_resp):
         result = discover_filings("1010")
 
     assert result.reachable is False

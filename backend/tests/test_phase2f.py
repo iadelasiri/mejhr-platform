@@ -239,14 +239,15 @@ def test_empty_content_returns_error():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Idempotent parsing — same fact updates, not duplicated
+# 4. Idempotent parsing — re-running replaces facts, never duplicates them
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_xbrl_parse_task_idempotent():
     """
-    When a fact (concept_name, context_ref, unit_ref) already exists in DB,
-    the task updates it instead of inserting — facts_updated incremented.
+    Re-running the parse task deletes existing raw items for the file then
+    inserts the fresh set — guarantees no duplicates across concurrent runs.
+    facts_updated is always 0; facts_inserted equals the parsed fact count.
     """
     filing = _mock_filing()
     xbrl_file = _mock_file(filing)
@@ -258,26 +259,17 @@ async def test_xbrl_parse_task_idempotent():
     files_result = MagicMock()
     files_result.all.return_value = [(xbrl_file, filing)]
 
-    # Existing raw items result: one existing fact with the same dedup key
-    existing_row = MagicMock()
-    existing_row.concept_name = "Revenue"
-    existing_row.context_ref = "c_dur"
-    existing_row.unit_ref = "iso4217:SAR"
-    existing_row.id = uuid.uuid4()
-    existing_result = MagicMock()
-    existing_result.__iter__ = MagicMock(return_value=iter([existing_row]))
-
-    update_result = MagicMock()
+    # delete(XBRLRawItem) result — simulates deleting 1 previously-existing row
+    delete_result = MagicMock()
+    delete_result.rowcount = 1
 
     session_cm, db = _make_task_db(
-        job_result,       # _update_job("running")
-        files_result,     # select(XBRLFile, XBRLFiling)
-        existing_result,  # select(XBRLRawItem) — returns existing row
-        update_result,    # update(XBRLRawItem) — the update call
-        job_result,       # _update_job("completed")
+        job_result,      # _update_job("running")
+        files_result,    # select(XBRLFile, XBRLFiling)
+        delete_result,   # delete(XBRLRawItem) — clears stale facts for this file
+        job_result,      # _update_job("completed")
     )
 
-    # Parse result will have one fact matching the existing dedup key
     fake_parse_result = ParseResult(
         facts=[ParsedFact(
             concept_name="Revenue",
@@ -307,10 +299,10 @@ async def test_xbrl_parse_task_idempotent():
     assert stats["files_parsed"] == 1
     assert stats["files_failed"] == 0
     assert stats["facts_found"] == 1
-    assert stats["facts_updated"] == 1
-    assert stats["facts_inserted"] == 0
-    # db.add should NOT have been called (no inserts)
-    db.add.assert_not_called()
+    assert stats["facts_updated"] == 0    # always 0 with delete-then-insert
+    assert stats["facts_inserted"] == 1   # fresh insert after delete
+    # db.add called once for the single fact
+    db.add.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,14 +321,14 @@ async def test_xbrl_parse_task_preserves_traceability():
     job_result = MagicMock()
     files_result = MagicMock()
     files_result.all.return_value = [(xbrl_file, filing)]
-    existing_result = MagicMock()
-    existing_result.__iter__ = MagicMock(return_value=iter([]))
+    delete_result = MagicMock()
+    delete_result.rowcount = 0  # no previously-existing facts
 
     session_cm, db = _make_task_db(
-        job_result,       # _update_job("running")
-        files_result,     # query files+filings
-        existing_result,  # query existing raw items (empty)
-        job_result,       # _update_job("completed")
+        job_result,      # _update_job("running")
+        files_result,    # query files+filings
+        delete_result,   # delete(XBRLRawItem)
+        job_result,      # _update_job("completed")
     )
 
     fake_fact = ParsedFact(
@@ -384,11 +376,11 @@ async def test_xbrl_parse_task_stats_success():
     job_result = MagicMock()
     files_result = MagicMock()
     files_result.all.return_value = [(xbrl_file, filing)]
-    existing_result = MagicMock()
-    existing_result.__iter__ = MagicMock(return_value=iter([]))
+    delete_result = MagicMock()
+    delete_result.rowcount = 0
 
     session_cm, db = _make_task_db(
-        job_result, files_result, existing_result, job_result
+        job_result, files_result, delete_result, job_result
     )
 
     facts = [

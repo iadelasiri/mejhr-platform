@@ -37,9 +37,16 @@ log = logging.getLogger(__name__)
 
 # Saudi Exchange announcement search endpoint.
 # Returns JSON: {"totalRecord": N, "announcements": [...]}
+#
+# NOTE (2026-06-16): The ci_anncmnt/annWdgtSearch portlet was removed when
+# the Saudi Exchange portal was rebuilt.  All known endpoint variants return
+# HTTP 404 (CWSRV0190E: File not found).  Discovery via this API is currently
+# broken; use the manual-seed CLI (`python -m app.pipeline.exchange.xbrl_seed`)
+# to register XBRL file URLs obtained directly from the Saudi Exchange portal.
 _ANNOUNCEMENT_SEARCH_URL = (
     "https://www.saudiexchange.sa/wps/pa/ci_anncmnt/annWdgtSearch"
 )
+_ANNOUNCEMENT_SEARCH_BROKEN = True  # set False once a working endpoint is found
 
 # Announcement category IDs that indicate financial statement filings.
 # Saudi Exchange uses Arabic category names; we match on any that reference
@@ -279,8 +286,31 @@ def discover_filings(symbol: str) -> DiscoveryResult:
     Discover XBRL filings for one company symbol via Saudi Exchange announcements API.
 
     Always returns a DiscoveryResult — never raises.
+
+    Note: as of 2026-06-16 the discovery endpoint is returning HTTP 404 because
+    the Saudi Exchange portal was rebuilt and the ci_anncmnt portlet was removed.
+    When _ANNOUNCEMENT_SEARCH_BROKEN is True this function returns immediately with
+    an informative error rather than making a pointless network request.
+    Use the manual seed CLI to register known XBRL file URLs.
     """
     fetched_at = datetime.now(timezone.utc).isoformat()
+
+    if _ANNOUNCEMENT_SEARCH_BROKEN:
+        return DiscoveryResult(
+            symbol=symbol,
+            filings=[],
+            reachable=False,
+            blocked=False,
+            status_code=None,
+            parse_note=(
+                f"Saudi Exchange announcement search endpoint is unavailable "
+                f"(ci_anncmnt portlet removed in portal rebuild). "
+                f"Seed XBRL URLs manually via xbrl_seed CLI."
+            ),
+            error="endpoint_unavailable: ci_anncmnt portlet removed",
+            fetched_at=fetched_at,
+        )
+
     page = 1
     page_size = 50
     all_filings: list[DiscoveredFiling] = []
