@@ -53,7 +53,9 @@ SECTION_MAP: dict[str, str] = {
     "100010": "FilingInformation",
     "200100": "IndependentAuditorsReport",
     "300200": "StatementOfFinancialPositionCurrentNonCurrent",
+    "300250": "StatementOfFinancialPositionOrderOfLiquidity",   # bank / unclassified BS
     "300400": "StatementOfIncomeFunctionOfExpense",
+    "300450": "StatementOfIncomeNatureOfExpense",               # nature-of-expense IS variant
     "300500": "StatementOfOtherComprehensiveIncomeBeforeTax",
     "300600": "StatementOfChangesInEquity",
     "300700": "StatementOfCashFlowsIndirectMethod",

@@ -39,7 +39,9 @@ _SA_SECTION_STMT_TYPE: dict[str, str] = {
     "FilingInformation": "filing_info",
     "IndependentAuditorsReport": "auditors_report",
     "StatementOfFinancialPositionCurrentNonCurrent": "balance_sheet",
+    "StatementOfFinancialPositionOrderOfLiquidity": "balance_sheet",   # bank / unclassified BS
     "StatementOfIncomeFunctionOfExpense": "income_statement",
+    "StatementOfIncomeNatureOfExpense": "income_statement",             # nature-of-expense IS variant
     "StatementOfOtherComprehensiveIncomeBeforeTax": "income_statement",
     "StatementOfChangesInEquity": "changes_in_equity",
     "StatementOfCashFlowsIndirectMethod": "cash_flow",
@@ -49,6 +51,7 @@ _SA_SECTION_STMT_TYPE: dict[str, str] = {
 # Balance sheet sections where the date is an instant (end-of-period snapshot)
 _SA_BS_SECTIONS = frozenset({
     "StatementOfFinancialPositionCurrentNonCurrent",
+    "StatementOfFinancialPositionOrderOfLiquidity",
 })
 
 # Sections whose table structure is narrative/notes — skip numeric extraction

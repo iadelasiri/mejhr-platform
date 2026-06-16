@@ -476,3 +476,76 @@ def test_parse_xbrl_file_missing_path():
     assert result.error is not None
     assert "read" in result.error.lower() or "no such file" in result.error.lower()
     assert result.facts == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2F.2 — Alternative section codes
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sa_viewer_html(section_class: str, rows: list[tuple[str, str]]) -> bytes:
+    """Minimal SA XBRL HTML viewer bytes for offline parser tests."""
+    header = "<tr><th></th><th>2024-01-01</th></tr>\n<tr><th></th><th>2024-12-31</th></tr>"
+    data = "\n".join(
+        f"<tr><td><span class='arb'>{lbl}</span></td><td>{val}</td></tr>"
+        for lbl, val in rows
+    )
+    html = (
+        f"<html>templateCheck-div templateIdClass<body>"
+        f"<div class='{section_class}'>"
+        f"<table class='gridtable'>{header}\n{data}</table>"
+        f"</div></body></html>"
+    )
+    return html.encode()
+
+
+def test_section_map_includes_alternative_codes():
+    """SECTION_MAP has bank BS (300250) and nature-of-expense IS (300450) entries."""
+    from app.pipeline.exchange.xbrl_renderer import SECTION_MAP
+    assert SECTION_MAP.get("300250") == "StatementOfFinancialPositionOrderOfLiquidity"
+    assert SECTION_MAP.get("300450") == "StatementOfIncomeNatureOfExpense"
+    # Original 8 codes still present
+    for code in ("100010", "200100", "300200", "300400", "300500", "300600", "300700", "400100"):
+        assert code in SECTION_MAP
+
+
+def test_required_sections_includes_alternatives():
+    """REQUIRED_SECTIONS (auto-built from SECTION_MAP keys) includes the two new codes."""
+    from app.pipeline.exchange.xbrl_renderer import REQUIRED_SECTIONS
+    assert "300250" in REQUIRED_SECTIONS
+    assert "300450" in REQUIRED_SECTIONS
+    assert len(REQUIRED_SECTIONS) == 10  # 8 original + 2 alternative
+
+
+def test_parse_sa_html_nature_of_expense_is_income_statement():
+    """SA viewer with StatementOfIncomeNatureOfExpense div → income_statement facts."""
+    html = _sa_viewer_html(
+        "StatementOfIncomeNatureOfExpense",
+        [("الإيرادات", "5000000"), ("المصروفات", "3000000")],
+    )
+    result = parse_xbrl_file_bytes(html, ".html")
+
+    assert result.error is None
+    assert result.file_format == "sa_html_viewer"
+    assert len(result.facts) >= 2
+    for f in result.facts:
+        assert f.statement_type == "income_statement"
+        assert f.instant_date is None
+        assert f.period_start == date(2024, 1, 1)
+        assert f.period_end == date(2024, 12, 31)
+
+
+def test_parse_sa_html_order_of_liquidity_is_balance_sheet():
+    """SA viewer with StatementOfFinancialPositionOrderOfLiquidity → balance_sheet with instant_date."""
+    html = _sa_viewer_html(
+        "StatementOfFinancialPositionOrderOfLiquidity",
+        [("الأصول", "30000000")],
+    )
+    result = parse_xbrl_file_bytes(html, ".html")
+
+    assert result.error is None
+    assert result.file_format == "sa_html_viewer"
+    assert len(result.facts) >= 1
+    for f in result.facts:
+        assert f.statement_type == "balance_sheet"
+        assert f.instant_date == date(2024, 12, 31)
+        assert f.period_start is None
