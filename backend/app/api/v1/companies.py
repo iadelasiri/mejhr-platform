@@ -5,9 +5,16 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.company import Company
+from app.models.financial import NormalizedFinancial
 from app.models.job import ImportJob
 from app.schemas.common import PaginatedResponse, SingleResponse, PipelineMeta, LastImportJob
 from app.schemas.company import CompanySummary, CompanyOut
+from app.schemas.financial import (
+    CompanyFinancialSummary,
+    CompanyFinancialsOut,
+    ConflictSummary,
+    NormalizedFinancialFields,
+)
 
 router = APIRouter()
 
@@ -182,3 +189,93 @@ async def get_company(symbol: str, db: AsyncSession = Depends(get_db)):
     )
 
     return SingleResponse(data=CompanyOut.model_validate(company), meta=meta)
+
+
+@router.get("/{symbol}/financials", response_model=SingleResponse[CompanyFinancialsOut])
+async def get_company_financials(
+    symbol: str,
+    fiscal_year: int | None = Query(None, description="Filter by fiscal year, e.g. 2025"),
+    fiscal_period: str | None = Query(None, description="Filter by period, e.g. Annual, Q1"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Read-only normalized financial data for a company page.
+
+    Reads only from existing tables (companies, normalized_financials,
+    normalization_conflicts). No ratios are calculated here — see Phase 2G
+    hard stop. If fiscal_year/fiscal_period are omitted, the most recent
+    normalized period is returned.
+    """
+    symbol = symbol.upper()
+
+    company_result = await db.execute(
+        select(Company).options(selectinload(Company.sector)).where(Company.symbol == symbol)
+    )
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company {symbol} not found",
+        )
+
+    query = select(NormalizedFinancial).where(NormalizedFinancial.symbol == symbol)
+    if fiscal_year is not None:
+        query = query.where(NormalizedFinancial.fiscal_year == fiscal_year)
+    if fiscal_period is not None:
+        query = query.where(NormalizedFinancial.period == fiscal_period)
+    query = query.order_by(NormalizedFinancial.fiscal_year.desc().nulls_last()).limit(1)
+
+    nf_result = await db.execute(query)
+    nf = nf_result.scalars().first()
+
+    if not nf:
+        filters = []
+        if fiscal_year is not None:
+            filters.append(f"fiscal_year={fiscal_year}")
+        if fiscal_period is not None:
+            filters.append(f"fiscal_period={fiscal_period}")
+        filter_note = f" ({', '.join(filters)})" if filters else ""
+        meta = PipelineMeta(
+            pipeline_status="not_configured",
+            message=(
+                f"No normalized financial data found for {symbol}{filter_note}. "
+                "Run the XBRL normalization pipeline for this symbol."
+            ),
+        )
+        return SingleResponse(success=False, data=None, meta=meta)
+
+    company_summary = CompanyFinancialSummary(
+        symbol=company.symbol,
+        arabic_name=company.arabic_name,
+        english_name=company.english_name,
+        market=company.market,
+        sector_ar=company.sector.arabic_name if company.sector else None,
+        sector_en=company.sector.english_name if company.sector else None,
+    )
+
+    conflicts = [
+        ConflictSummary(
+            field_name=c.field_name,
+            resolution_status=c.resolution_status,
+            candidate_count=len(c.conflicting_values) if c.conflicting_values else 0,
+        )
+        for c in nf.conflicts
+    ]
+
+    out = CompanyFinancialsOut(
+        company=company_summary,
+        fiscal_year=nf.fiscal_year,
+        fiscal_period=nf.period,
+        reporting_scale=nf.reporting_scale,
+        financials=NormalizedFinancialFields.model_validate(nf),
+        source_map=nf.source_map,
+        missing_fields=(nf.missing_fields or {}).get("fields", []),
+        conflicts=conflicts,
+        data_status=nf.normalization_status,
+        imported_at=nf.imported_at,
+        created_at=nf.created_at,
+    )
+
+    meta = PipelineMeta(pipeline_status="populated")
+
+    return SingleResponse(data=out, meta=meta)
