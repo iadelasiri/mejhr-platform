@@ -67,6 +67,7 @@ class NormalizedFinancial(Base):
     investing_cash_flow: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     financing_cash_flow: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     capex: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
+    free_cash_flow: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
     dividends_paid: Mapped[Decimal | None] = mapped_column(Numeric(28, 4), nullable=True)
 
     # Normalization metadata

@@ -1,5 +1,6 @@
 """
-XBRL financial normalizer — Phase 2G.1 (BS + CF) and Phase 2G.2 (IS high-confidence).
+XBRL financial normalizer — Phase 2G.1 (BS + CF), 2G.2 (IS high-confidence),
+                             Phase 2G.3 (revenue, cash, debt, free_cash_flow).
 
 Phase 2G.1 scope — Balance Sheet:  total_assets, total_liabilities, equity
                   — Cash Flow:      operating_cash_flow, investing_cash_flow,
@@ -10,7 +11,16 @@ Phase 2G.2 scope — Income Statement (high-confidence only):
                   — income_tax is logged in source_map["income_tax_detail"] when
                     separately identifiable but has no schema column yet.
 
-Hard stops: no revenue / gross_profit / operating_profit, no ratios, no screener writes.
+Phase 2G.3 scope — Revenue (multi-label; conflict detection for 2020;
+                              'إجمالي دخل العمليات' excluded — it is operating
+                              income not revenues for function companies)
+                  — cash_and_equivalents (BS instant-date field)
+                  — short_term_debt, long_term_debt (multi-label BS with conflict)
+                  — total_debt (derived: short_term_debt + long_term_debt)
+                  — free_cash_flow (derived: operating_cash_flow + capex)
+
+Hard stops: no cost_of_revenue / gross_profit / operating_profit / EBIT / EBITDA /
+            EPS, no ratios, no screener writes.
 Values are stored in absolute SAR (value_numeric × scale).
 """
 from __future__ import annotations
@@ -88,6 +98,49 @@ _NET_INCOME_CONTINUING_LABEL = "ربح (خسارة) الفترة من العمل
 _NET_INCOME_TOTAL_LABEL = "ربح (خسارة) الفترة"
 
 _SCALE_LABEL = "مستوى التقريب المستخدم في القوائم المالية"
+
+# ── Phase 2G.3 label maps ─────────────────────────────────────────────────────
+
+# Revenue — all candidates checked together; any two labels with different values
+# produce a Conflict rather than silently picking one.
+#
+# Function-of-expense (2240, 4263, 2050): الإيرادات
+# Nature-of-expense (2222, 2020):         إجمالي الإيرادات / مبيعات / مبيعات بضاعة
+#   2020 conflict: إجمالي الإيرادات and مبيعات بضاعة have DIFFERENT values → Conflict
+# Bank (1120):                            إجمالي الدخل التشغيلي (approximate proxy)
+#
+# NOTE: 'إجمالي دخل العمليات' is intentionally excluded.  It appears in the IS
+# for function companies (2240, 4263, 2050) but represents operating income
+# (~18–56 % of revenues), not top-line revenues.  Including it would produce
+# spurious revenue conflicts for these companies.
+_REVENUE_LABELS: list[tuple[str, bool]] = [
+    ("الإيرادات", False),
+    ("إجمالي الإيرادات", False),
+    ("مبيعات", False),
+    ("مبيعات بضاعة", False),
+    ("إجمالي الدخل التشغيلي", False),
+]
+_REVENUE_LABEL_SET: frozenset[str] = frozenset(label for label, _ in _REVENUE_LABELS)
+# When this label is the revenue source, mark source_map as approximate bank proxy.
+_BANK_REVENUE_LABEL = "إجمالي الدخل التشغيلي"
+
+# Cash & equivalents — single BS label; NULL for banks (no single label).
+_CASH_LABEL: tuple[str, bool] = ("أرصدة لدى البنوك ونقد في الصندوق", False)
+
+# Short-term debt labels in priority order.
+# If multiple match with DIFFERENT values → Conflict (do not auto-pick).
+_CURRENT_DEBT_LABELS: list[tuple[str, bool]] = [
+    ("قروض قصيرة الأجل", False),                    # 2240
+    ("قروض - متداولة", False),                       # 2222
+    ("قسط متداول من قروض طويلة الأجل", False),        # 2240, 4263 (current portion of LTD)
+]
+
+# Long-term debt labels in priority order.
+_NONCURRENT_DEBT_LABELS: list[tuple[str, bool]] = [
+    ("قروض - غير متداولة", False),                              # 2222
+    ("سندات دين وقروض لأجل وقروض وصكوك مصدرة", False),          # 2240, 4263, 2050
+    ("قروض وسلف", False),                                        # 2050 fallback
+]
 
 # ── Internal result types ─────────────────────────────────────────────────────
 
@@ -287,6 +340,138 @@ def _resolve_duration(
     return None
 
 
+def _resolve_revenue(
+    facts: list,
+    period_start: date,
+    period_end: date,
+) -> _Match | _Conflict | None:
+    """
+    Revenue resolver: all label candidates checked simultaneously.
+
+    Gathers every IS fact whose label_ar is in _REVENUE_LABEL_SET for the
+    current period. If all matching facts share a single unique numeric value,
+    returns the highest-priority label match. If any two labels produce
+    different values, returns Conflict — revenue is not silently resolved.
+
+    This handles the 2020 case where إجمالي الإيرادات and مبيعات بضاعة appear
+    with different values in the same filing.
+    """
+    candidates = [
+        f for f in facts
+        if f.label_ar in _REVENUE_LABEL_SET
+        and f.statement_type == "income_statement"
+        and f.period_start == period_start
+        and f.period_end == period_end
+        and f.value_numeric is not None
+    ]
+    if not candidates:
+        return None
+
+    unique_vals = {f.value_numeric for f in candidates}
+    if len(unique_vals) > 1:
+        return _Conflict(
+            field_name="revenue",
+            candidates=[
+                {
+                    "raw_item_id": str(c.id),
+                    "label_ar": c.label_ar,
+                    "value": float(c.value_numeric),
+                    "context_ref": c.context_ref,
+                }
+                for c in candidates
+            ],
+        )
+
+    # All candidates agree — pick the highest-priority label for source traceability.
+    label_priority = {label: i for i, (label, _) in enumerate(_REVENUE_LABELS)}
+    best = min(candidates, key=lambda f: label_priority.get(f.label_ar, 999))
+    return _Match(
+        field_name="revenue",
+        value=best.value_numeric,
+        raw_item_id=str(best.id),
+        label_ar=best.label_ar,
+        context_ref=best.context_ref,
+    )
+
+
+def _resolve_debt(
+    field_name: str,
+    label_specs: list[tuple[str, bool]],
+    facts: list,
+    period_end: date,
+) -> _Match | _Conflict | None:
+    """
+    Multi-label balance-sheet debt resolver.
+
+    Each label spec is tried independently. Clean matches (one unique value
+    per label) are collected. If multiple clean matches have different scaled
+    values → Conflict (do not auto-pick). If all agree or only one matches →
+    Match on the first clean candidate.
+
+    This handles the 2240 case where قروض قصيرة الأجل and
+    قسط متداول من قروض طويلة الأجل are two distinct debt components that must
+    not be conflated.
+    """
+    clean: list[tuple[Any, bool]] = []  # (fact, negate)
+
+    for label_ar, negate in label_specs:
+        candidates = [
+            f for f in facts
+            if f.label_ar == label_ar
+            and f.statement_type == "balance_sheet"
+            and f.instant_date == period_end
+            and f.value_numeric is not None
+        ]
+        if not candidates:
+            continue
+        unique_vals = {f.value_numeric for f in candidates}
+        if len(unique_vals) > 1:
+            # Within-label ambiguity — include all as conflict candidates
+            for c in candidates:
+                clean.append((c, negate))
+            continue
+        clean.append((candidates[0], negate))
+
+    if not clean:
+        return None
+
+    unique_scaled = {(-f.value_numeric if n else f.value_numeric) for f, n in clean}
+    if len(unique_scaled) > 1:
+        return _Conflict(
+            field_name=field_name,
+            candidates=[
+                {
+                    "raw_item_id": str(f.id),
+                    "label_ar": f.label_ar,
+                    "value": float(f.value_numeric),
+                    "context_ref": f.context_ref,
+                }
+                for f, _ in clean
+            ],
+        )
+
+    f, negate = clean[0]
+    return _Match(
+        field_name=field_name,
+        value=-f.value_numeric if negate else f.value_numeric,
+        raw_item_id=str(f.id),
+        label_ar=f.label_ar,
+        context_ref=f.context_ref,
+    )
+
+
+# ── Pure derivation helpers (also used in tests) ──────────────────────────────
+
+def _derive_total_debt(current: Decimal, noncurrent: Decimal) -> Decimal:
+    """total_debt = short_term_debt + long_term_debt."""
+    return current + noncurrent
+
+
+def _derive_free_cash_flow(operating_cf: Decimal, capex: Decimal) -> Decimal:
+    """free_cash_flow = operating_cash_flow + capex (capex is stored as negative outflow)."""
+    return operating_cf + capex
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
@@ -344,10 +529,69 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
         else:
             missing.append(field_name)
 
-    # ── Scale and source_map ─────────────────────────────────────────────────
+    # ── Phase 2G.3 — Revenue ─────────────────────────────────────────────────
+    r = _resolve_revenue(all_facts, p_start, p_end)
+    if isinstance(r, _Match):
+        matches["revenue"] = r
+    elif isinstance(r, _Conflict):
+        conflict_list.append(r)
+    else:
+        missing.append("revenue")
+
+    # ── Phase 2G.3 — Cash & Equivalents ─────────────────────────────────────
+    cash_label_ar, cash_negate = _CASH_LABEL
+    r = _resolve_bs("cash_and_equivalents", cash_label_ar, cash_negate, all_facts, p_end)
+    if isinstance(r, _Match):
+        matches["cash_and_equivalents"] = r
+    elif isinstance(r, _Conflict):
+        conflict_list.append(r)
+    else:
+        missing.append("cash_and_equivalents")
+
+    # ── Phase 2G.3 — Short-term Debt ─────────────────────────────────────────
+    r = _resolve_debt("short_term_debt", _CURRENT_DEBT_LABELS, all_facts, p_end)
+    if isinstance(r, _Match):
+        matches["short_term_debt"] = r
+    elif isinstance(r, _Conflict):
+        conflict_list.append(r)
+    else:
+        missing.append("short_term_debt")
+
+    # ── Phase 2G.3 — Long-term Debt ──────────────────────────────────────────
+    r = _resolve_debt("long_term_debt", _NONCURRENT_DEBT_LABELS, all_facts, p_end)
+    if isinstance(r, _Match):
+        matches["long_term_debt"] = r
+    elif isinstance(r, _Conflict):
+        conflict_list.append(r)
+    else:
+        missing.append("long_term_debt")
+
+    # ── Scale XBRL-sourced fields ─────────────────────────────────────────────
     field_values: dict[str, Decimal] = {
         fn: m.value * scale for fn, m in matches.items()
     }
+
+    # ── Phase 2G.3 — Derive total_debt ───────────────────────────────────────
+    # Both components must be resolved without conflict. If either is missing,
+    # total_debt is ambiguous — leave NULL and record in missing_fields.
+    if "short_term_debt" in field_values and "long_term_debt" in field_values:
+        field_values["total_debt"] = _derive_total_debt(
+            field_values["short_term_debt"], field_values["long_term_debt"]
+        )
+    else:
+        missing.append("total_debt")
+
+    # ── Phase 2G.3 — Derive free_cash_flow ───────────────────────────────────
+    # operating_cash_flow and capex are Phase 2G.1 high-confidence fields.
+    # capex is already stored as a negative outflow value, so FCF = OCF + capex.
+    if "operating_cash_flow" in field_values and "capex" in field_values:
+        field_values["free_cash_flow"] = _derive_free_cash_flow(
+            field_values["operating_cash_flow"], field_values["capex"]
+        )
+    else:
+        missing.append("free_cash_flow")
+
+    # ── Source map (XBRL-sourced fields) ─────────────────────────────────────
     source_map: dict[str, dict] = {
         fn: {
             "raw_item_id": m.raw_item_id,
@@ -356,6 +600,32 @@ async def normalize_symbol(symbol: str, db: AsyncSession) -> NormalizeResult:
         }
         for fn, m in matches.items()
     }
+
+    # Bank revenue: mark as approximate proxy when total_operating_income label used.
+    if "revenue" in source_map and matches["revenue"].label_ar == _BANK_REVENUE_LABEL:
+        source_map["revenue"]["bank_approximate"] = True
+
+    # Derived total_debt: record calculation provenance.
+    if "total_debt" in field_values:
+        source_map["total_debt"] = {
+            "calculated": True,
+            "formula": "short_term_debt + long_term_debt",
+            "components": {
+                "short_term_debt": float(field_values["short_term_debt"]),
+                "long_term_debt": float(field_values["long_term_debt"]),
+            },
+        }
+
+    # Derived free_cash_flow: record calculation provenance.
+    if "free_cash_flow" in field_values:
+        source_map["free_cash_flow"] = {
+            "calculated": True,
+            "formula": "operating_cash_flow + capex",
+            "components": {
+                "operating_cash_flow": float(field_values["operating_cash_flow"]),
+                "capex": float(field_values["capex"]),
+            },
+        }
 
     # ── Supplemental: log total net_income when continuing-ops label was used ─
     ni_match = matches.get("net_income")
