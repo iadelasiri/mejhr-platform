@@ -1,5 +1,6 @@
 """
-Official partial company price fetcher — Saudi Exchange (Phase 2D.4).
+Official partial company price fetcher — Saudi Exchange (Phase 2D.4;
+upsert performance optimized in Phase 2D.6 — see upsert_company_prices).
 
 Source (confirmed in PHASE_2D2_DISCOVERY.md, approved spec):
   TickerServlet — returns a `stockData` list covering both Main Market
@@ -238,54 +239,129 @@ def _compose_source_value(rec: CompanyPriceRecord) -> str:
     return f"{rec.source}; trade_date_derivation={rec.trade_date_derivation}"
 
 
-# ── Idempotent upsert ──────────────────────────────────────────────────────────
+# ── Idempotent bulk upsert (Phase 2D.6) ───────────────────────────────────────
 
-async def upsert_company_prices(records: list[CompanyPriceRecord], db) -> dict:
-    """
-    Idempotent upsert into market_data, keyed on the table's existing
-    UniqueConstraint(symbol, trade_date) — no schema change required.
+_DEFAULT_CHUNK_SIZE = 200
 
-    SELECT-then-UPDATE-or-INSERT, consistent with index_prices.py and
-    xbrl_normalizer.normalize_symbol.
+
+def _chunked(items: list[Any], size: int) -> list[list[Any]]:
+    """Split a list into bounded chunks of at most `size` items each."""
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+async def _select_existing_keys(db, keys: list[tuple[str, date]]) -> set[tuple[str, date]]:
     """
-    from sqlalchemy import select, insert, update
+    One bulk SELECT to find which (symbol, trade_date) keys already exist —
+    the "safe pre-query strategy" used to report accurate inserted/updated
+    counts without per-record reads. See upsert_company_prices docstring
+    for why this is used instead of inspecting the system `xmax` column.
+    """
+    from sqlalchemy import select, tuple_
     from app.models.market_data import MarketData
 
+    if not keys:
+        return set()
+
+    result = await db.execute(
+        select(MarketData.symbol, MarketData.trade_date)
+        .where(tuple_(MarketData.symbol, MarketData.trade_date).in_(keys))
+    )
+    return {(row.symbol, row.trade_date) for row in result.all()}
+
+
+async def upsert_company_prices(
+    records: list[CompanyPriceRecord], db, chunk_size: int = _DEFAULT_CHUNK_SIZE,
+) -> dict:
+    """
+    Idempotent BULK upsert into market_data using PostgreSQL
+    INSERT ... ON CONFLICT (symbol, trade_date) DO UPDATE, replacing the
+    Phase 2D.4 per-record SELECT-then-INSERT/UPDATE loop (which took 17m49s
+    for ~400 records across two validation runs — see PHASE_2D2/2D4 reports).
+
+    Processed in bounded chunks (default 200 records) to keep statement
+    size reasonable; each chunk costs exactly 2 round trips (one pre-query
+    SELECT, one bulk INSERT..ON CONFLICT) regardless of chunk size, versus
+    2 round trips PER RECORD previously.
+
+    Exact insert/update split without extra reads:
+    PostgreSQL's RETURNING clause on an INSERT ... ON CONFLICT DO UPDATE
+    statement does not, on its own, reliably distinguish which returned
+    rows were freshly inserted versus updated — the commonly-cited
+    `RETURNING (xmax = 0) AS inserted` idiom relies on an internal system
+    column whose behavior is not part of the documented SQL contract.
+    Rather than depend on that, this function uses a "safe pre-query
+    strategy": one bulk SELECT per chunk to find which (symbol, trade_date)
+    keys already exist *before* the upsert runs. Any key found there will
+    be updated; everything else will be inserted. This costs one extra
+    bulk round trip per chunk (negligible) in exchange for results that
+    are exact and easy to audit.
+
+    Duplicate input keys: if the same (symbol, trade_date) appears more
+    than once within a single batch, PostgreSQL raises "ON CONFLICT DO
+    UPDATE command cannot affect row a second time" — a single INSERT
+    statement's VALUES list cannot itself contain two rows for the same
+    conflict target. Inputs are deduplicated up front (last occurrence
+    wins) to guarantee this never happens; in practice this should not
+    occur since _parse_ticker_stock_data already dedupes by symbol and
+    trade_date is constant per fetch, but it is enforced here defensively
+    regardless of caller behavior.
+
+    open/high/low/previous_close are written exactly as provided on each
+    record (always None for this source — never fabricated) and are
+    included in the ON CONFLICT UPDATE SET clause like every other field,
+    so re-running this upsert is fully idempotent for those columns too.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.models.market_data import MarketData
+
+    if not records:
+        return {"inserted": 0, "updated": 0, "total": 0}
+
+    # Deduplicate by conflict target (symbol, trade_date); last occurrence wins.
+    deduped: dict[tuple[str, date], CompanyPriceRecord] = {}
+    for rec in records:
+        deduped[(rec.symbol, rec.trade_date)] = rec
+    unique_records = list(deduped.values())
+
+    now = datetime.now(timezone.utc)
     inserted = 0
     updated = 0
+    update_columns = (
+        "open", "high", "low", "close", "previous_close",
+        "change_amount", "change_pct", "volume", "turnover", "trades",
+        "source", "source_url", "imported_at",
+    )
 
-    for rec in records:
-        existing_row = await db.execute(
-            select(MarketData.id)
-            .where(MarketData.symbol == rec.symbol)
-            .where(MarketData.trade_date == rec.trade_date)
-        )
-        existing_id = existing_row.scalar_one_or_none()
+    for chunk in _chunked(unique_records, chunk_size):
+        keys = [(rec.symbol, rec.trade_date) for rec in chunk]
+        existing_keys = await _select_existing_keys(db, keys)
 
-        values = dict(
-            open=rec.open, high=rec.high, low=rec.low, close=rec.close,
-            previous_close=rec.previous_close, change_amount=rec.change_amount,
-            change_pct=rec.change_pct, volume=rec.volume, turnover=rec.turnover,
-            trades=rec.trades,
-            source=_compose_source_value(rec), source_url=rec.source_url,
-            imported_at=datetime.now(timezone.utc),
-        )
-
-        if existing_id:
-            await db.execute(
-                update(MarketData).where(MarketData.id == existing_id).values(**values)
+        values = [
+            dict(
+                symbol=rec.symbol, trade_date=rec.trade_date,
+                open=rec.open, high=rec.high, low=rec.low, close=rec.close,
+                previous_close=rec.previous_close, change_amount=rec.change_amount,
+                change_pct=rec.change_pct, volume=rec.volume, turnover=rec.turnover,
+                trades=rec.trades,
+                source=_compose_source_value(rec), source_url=rec.source_url,
+                imported_at=now,
             )
-            updated += 1
-        else:
-            await db.execute(
-                insert(MarketData).values(
-                    symbol=rec.symbol, trade_date=rec.trade_date, **values
-                )
-            )
-            inserted += 1
+            for rec in chunk
+        ]
+
+        stmt = pg_insert(MarketData).values(values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol", "trade_date"],
+            set_={col: getattr(stmt.excluded, col) for col in update_columns},
+        )
+        await db.execute(stmt)
+
+        chunk_updated = sum(1 for k in keys if k in existing_keys)
+        inserted += len(chunk) - chunk_updated
+        updated += chunk_updated
 
     await db.commit()
-    return {"inserted": inserted, "updated": updated, "total": len(records)}
+    return {"inserted": inserted, "updated": updated, "total": len(unique_records)}
 
 
 # ── CLI (fetch + print only — no DB write) ────────────────────────────────────

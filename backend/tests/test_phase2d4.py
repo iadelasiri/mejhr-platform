@@ -1,18 +1,22 @@
 """
 Phase 2D.4 tests — Partial company prices pipeline (TickerServlet).
+Phase 2D.6 extended the upsert section below — bulk INSERT ... ON CONFLICT
+replacing the original per-record SELECT-then-INSERT/UPDATE loop.
 
 All tests use saved fixture payloads modeled on the records captured during
 Phase 2D.2 discovery (see PHASE_2D2_DISCOVERY.md). No live network calls.
 Covers: field mapping (close/change/change_pct/volume/turnover/trades),
 NULL handling for open/high/low/previous_close (never fabricated),
 defensive parsing of malformed/duplicate/non-numeric entries, trade_date
-derivation reuse, schema-fit source composition, and idempotent upsert.
+derivation reuse, schema-fit source composition, and bulk idempotent upsert
+(insert/update/mixed/empty/chunking/NULL persistence/duplicate-key handling).
 """
 from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -328,49 +332,69 @@ def test_fetch_company_prices_network_exception():
     assert "boom" in result.error
 
 
-# ── upsert_company_prices (idempotency, reuses MarketData uniqueness key) ────
+# ── upsert_company_prices (Phase 2D.6 — bulk INSERT ... ON CONFLICT) ─────────
+#
+# Each chunk now costs exactly 2 db.execute() calls regardless of chunk size:
+#   1. the pre-query SELECT (existing-keys lookup, the "safe pre-query
+#      strategy" used to report exact inserted/updated counts)
+#   2. the bulk INSERT ... ON CONFLICT DO UPDATE
+# Mocks below provide db.execute.side_effect as [select_result, insert_result]
+# pairs, one pair per expected chunk.
+
+def _existing_keys_result(keys: list[tuple[str, date]]):
+    """Mock SELECT result whose .all() yields rows with .symbol/.trade_date."""
+    rows = [SimpleNamespace(symbol=s, trade_date=d) for s, d in keys]
+    result = MagicMock()
+    result.all.return_value = rows
+    return result
+
+
+def _compiled_insert_params(call_args) -> dict:
+    """Compile the bulk INSERT...ON CONFLICT statement passed to db.execute()."""
+    stmt = call_args.args[0]
+    return stmt.compile().params
+
 
 @pytest.mark.asyncio
-async def test_upsert_inserts_new_record():
-    record = _company_price_record()
+async def test_upsert_bulk_insert_new_records():
+    """All keys absent from the pre-query -> all counted as inserted, one chunk."""
+    records = [_company_price_record(symbol=s) for s in ("2222", "4700", "1010")]
 
     db = AsyncMock()
-    no_existing = MagicMock()
-    no_existing.scalar_one_or_none.return_value = None
-    db.execute.return_value = no_existing
+    db.execute.side_effect = [_existing_keys_result([]), MagicMock()]
 
-    stats = await upsert_company_prices([record], db)
+    stats = await upsert_company_prices(records, db)
 
-    assert stats == {"inserted": 1, "updated": 0, "total": 1}
+    assert stats == {"inserted": 3, "updated": 0, "total": 3}
+    assert db.execute.await_count == 2  # 1 SELECT + 1 bulk INSERT, not 2-per-record
     db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_upsert_updates_existing_record_not_duplicate():
-    record = _company_price_record()
+async def test_upsert_bulk_update_existing_records():
+    """All keys present in the pre-query -> all counted as updated, one chunk."""
+    records = [_company_price_record(symbol=s) for s in ("2222", "4700", "1010")]
+    keys = [(r.symbol, r.trade_date) for r in records]
 
-    existing_id = uuid.uuid4()
     db = AsyncMock()
-    has_existing = MagicMock()
-    has_existing.scalar_one_or_none.return_value = existing_id
-    db.execute.return_value = has_existing
+    db.execute.side_effect = [_existing_keys_result(keys), MagicMock()]
 
-    stats = await upsert_company_prices([record], db)
+    stats = await upsert_company_prices(records, db)
 
-    assert stats == {"inserted": 0, "updated": 1, "total": 1}
+    assert stats == {"inserted": 0, "updated": 3, "total": 3}
+    assert db.execute.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_upsert_mixed_batch():
+async def test_upsert_mixed_insert_update():
     new_record = _company_price_record(symbol="4700")
     existing_record = _company_price_record(symbol="2222")
 
     db = AsyncMock()
-    no_existing = MagicMock()
-    no_existing.scalar_one_or_none.return_value = None
-    has_existing = MagicMock()
-    has_existing.scalar_one_or_none.return_value = uuid.uuid4()
-    db.execute.side_effect = [no_existing, MagicMock(), has_existing, MagicMock()]
+    db.execute.side_effect = [
+        _existing_keys_result([(existing_record.symbol, existing_record.trade_date)]),
+        MagicMock(),
+    ]
 
     stats = await upsert_company_prices([new_record, existing_record], db)
 
@@ -378,27 +402,103 @@ async def test_upsert_mixed_batch():
 
 
 @pytest.mark.asyncio
-async def test_upsert_stores_open_high_low_previous_close_as_null():
-    """Confirms the NULL fields actually reach the persistence layer as None, not omitted."""
-    record = _company_price_record()
-
-    db = AsyncMock()
-    no_existing = MagicMock()
-    no_existing.scalar_one_or_none.return_value = None
-    db.execute.return_value = no_existing
-
-    await upsert_company_prices([record], db)
-
-    insert_call = db.execute.call_args_list[1]
-    compiled_values = insert_call.args[0].compile().params
-    assert compiled_values["open"] is None
-    assert compiled_values["high"] is None
-    assert compiled_values["low"] is None
-    assert compiled_values["previous_close"] is None
-
-
-@pytest.mark.asyncio
-async def test_upsert_empty_list_is_a_noop():
+async def test_upsert_empty_input_is_a_noop():
     db = AsyncMock()
     stats = await upsert_company_prices([], db)
     assert stats == {"inserted": 0, "updated": 0, "total": 0}
+    db.execute.assert_not_called()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_chunk_boundary():
+    """5 records with chunk_size=2 -> 3 chunks (2, 2, 1), 6 total db.execute() calls."""
+    records = [_company_price_record(symbol=f"SYM{i}") for i in range(5)]
+
+    db = AsyncMock()
+    # 3 chunks => 3 (select, insert) pairs
+    db.execute.side_effect = [
+        _existing_keys_result([]), MagicMock(),
+        _existing_keys_result([(records[2].symbol, records[2].trade_date)]), MagicMock(),
+        _existing_keys_result([]), MagicMock(),
+    ]
+
+    stats = await upsert_company_prices(records, db, chunk_size=2)
+
+    assert stats == {"inserted": 4, "updated": 1, "total": 5}
+    assert db.execute.await_count == 6
+
+
+@pytest.mark.asyncio
+async def test_upsert_chunk_boundary_exact_multiple():
+    """4 records with chunk_size=2 -> exactly 2 chunks, no trailing partial chunk."""
+    records = [_company_price_record(symbol=f"SYM{i}") for i in range(4)]
+
+    db = AsyncMock()
+    db.execute.side_effect = [
+        _existing_keys_result([]), MagicMock(),
+        _existing_keys_result([]), MagicMock(),
+    ]
+
+    stats = await upsert_company_prices(records, db, chunk_size=2)
+
+    assert stats == {"inserted": 4, "updated": 0, "total": 4}
+    assert db.execute.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_upsert_stores_open_high_low_previous_close_as_null():
+    """Confirms the NULL fields actually reach the persistence layer as None for every
+    row in the bulk VALUES list, not omitted."""
+    records = [_company_price_record(symbol=s) for s in ("2222", "4700")]
+
+    db = AsyncMock()
+    db.execute.side_effect = [_existing_keys_result([]), MagicMock()]
+
+    await upsert_company_prices(records, db)
+
+    insert_call = db.execute.call_args_list[1]
+    params = _compiled_insert_params(insert_call)
+    for i in range(len(records)):
+        assert params[f"open_m{i}"] is None
+        assert params[f"high_m{i}"] is None
+        assert params[f"low_m{i}"] is None
+        assert params[f"previous_close_m{i}"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_duplicate_input_symbol_deduplicated():
+    """
+    Same (symbol, trade_date) appearing twice in one batch must not be sent
+    to PostgreSQL twice in the same statement (which would raise "ON CONFLICT
+    DO UPDATE command cannot affect row a second time") -- it must be
+    deduplicated up front, with the last occurrence winning.
+    """
+    first = _company_price_record(symbol="2222", close=Decimal("1.0"))
+    duplicate = _company_price_record(symbol="2222", close=Decimal("2.0"))
+
+    db = AsyncMock()
+    db.execute.side_effect = [_existing_keys_result([]), MagicMock()]
+
+    stats = await upsert_company_prices([first, duplicate], db)
+
+    assert stats == {"inserted": 1, "updated": 0, "total": 1}
+    insert_call = db.execute.call_args_list[1]
+    params = _compiled_insert_params(insert_call)
+    # Only one row (_m0) in the VALUES list -- no _m1 key should exist.
+    assert "close_m1" not in params
+    assert params["close_m0"] == Decimal("2.0")  # last occurrence wins
+
+
+@pytest.mark.asyncio
+async def test_upsert_duplicate_symbols_across_different_trade_dates_not_deduplicated():
+    """Same symbol but different trade_date is a different conflict target -- both kept."""
+    rec_day1 = _company_price_record(symbol="2222", trade_date=date(2026, 6, 17))
+    rec_day2 = _company_price_record(symbol="2222", trade_date=date(2026, 6, 18))
+
+    db = AsyncMock()
+    db.execute.side_effect = [_existing_keys_result([]), MagicMock()]
+
+    stats = await upsert_company_prices([rec_day1, rec_day2], db)
+
+    assert stats == {"inserted": 2, "updated": 0, "total": 2}
