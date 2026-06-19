@@ -87,9 +87,19 @@ _OBJECT_RE = re.compile(
 # ── Pure helpers (no network, fully unit-testable) ────────────────────────────
 
 def _to_decimal(value: Any) -> Decimal | None:
-    """Coerce a numeric or numeric-string field to Decimal. None on failure."""
+    """
+    Coerce a numeric or numeric-string field to Decimal. None on failure or
+    blank input. Strips comma thousands-separators from string input
+    defensively (Saudi Exchange endpoints have shown inconsistent numeric
+    string formatting — see _coerce_trades_count below).
+    """
     if value is None:
         return None
+    if isinstance(value, str):
+        stripped = value.strip().replace(",", "")
+        if not stripped:
+            return None
+        value = stripped
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
