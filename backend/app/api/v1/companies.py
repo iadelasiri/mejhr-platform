@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -10,10 +12,15 @@ from app.models.job import ImportJob
 from app.schemas.common import PaginatedResponse, SingleResponse, PipelineMeta, LastImportJob
 from app.schemas.company import CompanySummary, CompanyOut
 from app.schemas.financial import (
-    CompanyFinancialSummary,
+    BalanceSheetSection,
+    CashFlowSection,
     CompanyFinancialsOut,
+    CompanySection,
     ConflictSummary,
-    NormalizedFinancialFields,
+    DataQualitySection,
+    FilingSection,
+    IncomeStatementSection,
+    ResponseMetadata,
 )
 
 router = APIRouter()
@@ -202,9 +209,10 @@ async def get_company_financials(
     Read-only normalized financial data for a company page.
 
     Reads only from existing tables (companies, normalized_financials,
-    normalization_conflicts). No ratios are calculated here — see Phase 2G
-    hard stop. If fiscal_year/fiscal_period are omitted, the most recent
-    normalized period is returned.
+    normalization_conflicts). No ratios, EPS, EBITDA, gross_profit,
+    operating_profit, or valuation fields are calculated or exposed here —
+    see Phase 2G hard stop. If fiscal_year/fiscal_period are omitted, the
+    most recent normalized period is returned.
     """
     symbol = symbol.upper()
 
@@ -244,13 +252,22 @@ async def get_company_financials(
         )
         return SingleResponse(success=False, data=None, meta=meta)
 
-    company_summary = CompanyFinancialSummary(
+    company_section = CompanySection(
         symbol=company.symbol,
-        arabic_name=company.arabic_name,
-        english_name=company.english_name,
+        name_ar=company.arabic_name,
+        name_en=company.english_name,
         market=company.market,
         sector_ar=company.sector.arabic_name if company.sector else None,
         sector_en=company.sector.english_name if company.sector else None,
+    )
+
+    filing_section = FilingSection(
+        fiscal_year=nf.fiscal_year,
+        period=nf.period,
+        period_type=nf.period_type,
+        reporting_scale=nf.reporting_scale,
+        is_consolidated=None,
+        normalization_status=nf.normalization_status,
     )
 
     conflicts = [
@@ -262,18 +279,22 @@ async def get_company_financials(
         for c in nf.conflicts
     ]
 
-    out = CompanyFinancialsOut(
-        company=company_summary,
-        fiscal_year=nf.fiscal_year,
-        fiscal_period=nf.period,
-        reporting_scale=nf.reporting_scale,
-        financials=NormalizedFinancialFields.model_validate(nf),
-        source_map=nf.source_map,
+    data_quality_section = DataQualitySection(
         missing_fields=(nf.missing_fields or {}).get("fields", []),
+        conflict_count=len(conflicts),
         conflicts=conflicts,
-        data_status=nf.normalization_status,
-        imported_at=nf.imported_at,
-        created_at=nf.created_at,
+        source_map_available=bool(nf.source_map),
+        source_map=nf.source_map,
+    )
+
+    out = CompanyFinancialsOut(
+        company=company_section,
+        filing=filing_section,
+        balance_sheet=BalanceSheetSection.model_validate(nf),
+        income_statement=IncomeStatementSection.model_validate(nf),
+        cash_flow=CashFlowSection.model_validate(nf),
+        data_quality=data_quality_section,
+        metadata=ResponseMetadata(generated_at=datetime.now(timezone.utc)),
     )
 
     meta = PipelineMeta(pipeline_status="populated")
