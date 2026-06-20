@@ -4,9 +4,11 @@ import SectionCard from "@/components/financials/SectionCard";
 import FinancialRow from "@/components/financials/FinancialRow";
 import DataQualityPanel from "@/components/financials/DataQualityPanel";
 import CompanyHeaderCard from "@/components/financials/CompanyHeaderCard";
+import PriceCard from "@/components/financials/PriceCard";
 import QuickSampleLinks from "@/components/companies/QuickSampleLinks";
 import { formatDateTime } from "@/lib/format";
 import type { CompanyFinancialsResponse } from "@/types/financials";
+import type { CompanyPriceOut, CompanyPriceResponse } from "@/types/prices";
 import Link from "next/link";
 
 // API_INTERNAL_URL (server-only) takes priority for this server-side fetch
@@ -39,6 +41,25 @@ async function fetchFinancials(symbol: string): Promise<{
   }
 }
 
+/**
+ * Latest price is supplementary — any failure (network, 404, no row yet)
+ * degrades to null (rendered as a clean "unavailable" card) and never
+ * blocks or errors the financials page itself.
+ */
+async function fetchLatestPrice(symbol: string): Promise<CompanyPriceOut | null> {
+  try {
+    const res = await fetch(`${API_URL}/api/v1/companies/${symbol}/prices/latest`, {
+      next: { revalidate: 60 },
+    });
+    if (!res.ok) return null;
+    const result: CompanyPriceResponse = await res.json();
+    if (!result.success || !result.data) return null;
+    return result.data;
+  } catch {
+    return null;
+  }
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -58,7 +79,10 @@ export default async function CompanyFinancialsPage({
   const tCommon = await getTranslations("common");
   const notAvailable = tCommon("notAvailable");
 
-  const { result, notFound, error } = await fetchFinancials(symbol);
+  const [{ result, notFound, error }, price] = await Promise.all([
+    fetchFinancials(symbol),
+    fetchLatestPrice(symbol),
+  ]);
 
   if (error) {
     return (
@@ -103,6 +127,24 @@ export default async function CompanyFinancialsPage({
         notAvailableText={notAvailable}
         backToListLabel={t("backToList")}
         backHref={`/${locale}/companies`}
+      />
+
+      <PriceCard
+        price={price}
+        locale={locale}
+        labels={{
+          title: t("price.title"),
+          close: t("price.close"),
+          changeAmount: t("price.changeAmount"),
+          changePct: t("price.changePct"),
+          volume: t("price.volume"),
+          turnover: t("price.turnover"),
+          tradesCount: t("price.tradesCount"),
+          tradeDate: t("price.tradeDate"),
+          source: t("price.source"),
+          notAvailable,
+          unavailableMessage: t("price.unavailableMessage"),
+        }}
       />
 
       {/* Filing / period section — normalization status now lives in the header card above */}

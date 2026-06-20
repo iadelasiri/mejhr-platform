@@ -6,6 +6,7 @@
   "nav": {
     "home": "Home",
     "companies": "Companies",
+    "market": "Market",
     "screener": "Screener",
     "sectors": "Sectors",
     "announcements": "Announcements",
@@ -220,6 +221,42 @@
       "manualOverride": "Manual Override",
       "manualOverrideYes": "Yes",
       "manualOverrideNo": "No"
+    },
+    "price": {
+      "title": "Latest Price",
+      "close": "Close",
+      "changeAmount": "Change",
+      "changePct": "Change %",
+      "volume": "Volume",
+      "turnover": "Turnover",
+      "tradesCount": "Trades",
+      "tradeDate": "Trade Date",
+      "source": "Source",
+      "unavailableMessage": "No price data available for this symbol."
+    }
+  },
+  "market": {
+    "title": "Market Indices",
+    "subtitle": "Latest official Saudi Exchange index prices — TASI, MT30, and sector indices",
+    "noData": "No index price data available",
+    "noDataDesc": "Run the index prices import job to populate this page.",
+    "loadError": "Could not load market indices",
+    "loadErrorDesc": "The backend API may be unreachable. Check the connection and try again.",
+    "resultsCount": "{count} indices",
+    "columns": {
+      "indexCode": "Index",
+      "indexName": "Name",
+      "close": "Close",
+      "changeAmount": "Change",
+      "changePct": "Change %",
+      "open": "Open",
+      "high": "High",
+      "low": "Low",
+      "volume": "Volume",
+      "turnover": "Turnover",
+      "tradesCount": "Trades",
+      "tradeDate": "Trade Date",
+      "source": "Source"
     }
   }
 }

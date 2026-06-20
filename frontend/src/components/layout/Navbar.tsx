@@ -42,6 +42,7 @@ export default function Navbar() {
 
   const navLinks = [
     { href: `/${locale}/companies`, label: t("companies") },
+    { href: `/${locale}/market`, label: t("market") },
     { href: `/${locale}/screener`, label: t("screener") },
     { href: `/${locale}/sectors`, label: t("sectors") },
     { href: `/${locale}/announcements`, label: t("announcements") },

@@ -6,6 +6,7 @@
   "nav": {
     "home": "الرئيسية",
     "companies": "الشركات",
+    "market": "السوق",
     "screener": "الفلتر",
     "sectors": "القطاعات",
     "announcements": "الإفصاحات",
@@ -220,6 +221,42 @@
       "manualOverride": "تجاوز يدوي",
       "manualOverrideYes": "نعم",
       "manualOverrideNo": "لا"
+    },
+    "price": {
+      "title": "آخر سعر",
+      "close": "الإغلاق",
+      "changeAmount": "التغيير",
+      "changePct": "التغيير %",
+      "volume": "الكمية المتداولة",
+      "turnover": "قيمة التداول",
+      "tradesCount": "عدد الصفقات",
+      "tradeDate": "تاريخ التداول",
+      "source": "المصدر",
+      "unavailableMessage": "لا تتوفر بيانات سعر لهذا الرمز."
+    }
+  },
+  "market": {
+    "title": "مؤشرات السوق",
+    "subtitle": "آخر أسعار مؤشرات السوق السعودية الرسمية — تاسي، MT30، والمؤشرات القطاعية",
+    "noData": "لا تتوفر بيانات أسعار المؤشرات",
+    "noDataDesc": "شغّل مهمة استيراد أسعار المؤشرات لتعبئة هذه الصفحة.",
+    "loadError": "تعذّر تحميل مؤشرات السوق",
+    "loadErrorDesc": "قد يكون الاتصال بواجهة الخادم غير متاح. تحقق من الاتصال وحاول مرة أخرى.",
+    "resultsCount": "{count} مؤشر",
+    "columns": {
+      "indexCode": "المؤشر",
+      "indexName": "الاسم",
+      "close": "الإغلاق",
+      "changeAmount": "التغيير",
+      "changePct": "التغيير %",
+      "open": "الافتتاح",
+      "high": "الأعلى",
+      "low": "الأدنى",
+      "volume": "الكمية المتداولة",
+      "turnover": "قيمة التداول",
+      "tradesCount": "عدد الصفقات",
+      "tradeDate": "تاريخ التداول",
+      "source": "المصدر"
     }
   }
 }

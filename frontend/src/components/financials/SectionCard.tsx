@@ -3,6 +3,7 @@ const ACCENT_COLORS = {
   balanceSheet: "border-t-blue-500 dark:border-t-blue-500",
   incomeStatement: "border-t-emerald-500 dark:border-t-emerald-500",
   cashFlow: "border-t-violet-500 dark:border-t-violet-500",
+  price: "border-t-cyan-500 dark:border-t-cyan-500",
 } as const;
 
 export default function SectionCard({

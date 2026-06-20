@@ -47,6 +47,28 @@ export function formatFinancialValue(
   return { text: formatted, isNegative: n < 0, isAvailable: true };
 }
 
+/**
+ * Format a price/percentage Decimal-as-string value (e.g. close,
+ * change_amount, change_pct) with English digits and 2 decimal places —
+ * unlike formatFinancialValue (0 decimals, for large balance-sheet
+ * figures), prices and percentages need fractional precision (e.g.
+ * "34.30", "-1.15") to not be misleading when rounded to whole numbers.
+ */
+export function formatPriceValue(
+  value: string | number | null | undefined,
+  notAvailableText: string,
+): FormattedNumber {
+  const n = parseFinancialNumber(value);
+  if (n === null) {
+    return { text: notAvailableText, isNegative: false, isAvailable: false };
+  }
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+  return { text: formatted, isNegative: n < 0, isAvailable: true };
+}
+
 /** Format an integer count (e.g. reporting_scale) with English digits. */
 export function formatInteger(
   value: number | null | undefined,

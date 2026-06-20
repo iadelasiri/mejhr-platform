@@ -70,6 +70,13 @@ export const api = {
     );
   },
 
+  marketIndicesLatest: (params?: { page?: number; per_page?: number }) => {
+    const q = params
+      ? "?" + new URLSearchParams(params as unknown as Record<string, string>).toString()
+      : "";
+    return apiFetch<import("@/types/prices").IndexPricesListResponse>(`/market/indices/latest${q}`);
+  },
+
   screener: (params?: Record<string, string | number>) => {
     const q = params ? "?" + new URLSearchParams(params as Record<string, string>).toString() : "";
     return apiFetch<PaginatedResponse<unknown>>(`/screener/${q}`);
