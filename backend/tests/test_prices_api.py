@@ -101,6 +101,12 @@ def _rows_result(pairs):
     return r
 
 
+def _scalars_all_result(items):
+    r = MagicMock()
+    r.scalars.return_value.all.return_value = items
+    return r
+
+
 # ── 1. Latest company price — found ───────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -181,6 +187,136 @@ async def test_latest_company_price_unknown_symbol_404():
         assert "9999" in resp.json()["detail"]
     finally:
         app.dependency_overrides.clear()
+
+
+# ── 3b. Latest company prices (bulk) — one row per symbol ────────────────────
+
+@pytest.mark.asyncio
+async def test_bulk_latest_company_prices_one_row_per_symbol():
+    p2240 = _make_market_data(symbol="2240", close=Decimal("34.3000"), change_amount=Decimal("-0.4000"))
+    p2222 = _make_market_data(symbol="2222", close=Decimal("26.5200"), change_amount=Decimal("-0.0800"))
+
+    db = AsyncMock()
+    db.execute.side_effect = [
+        _scalar_count_result(2),
+        _scalars_all_result([p2240, p2222]),
+    ]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["total"] == 2
+        symbols = {row["symbol"] for row in body["data"]}
+        assert symbols == {"2240", "2222"}
+        row_2240 = next(r for r in body["data"] if r["symbol"] == "2240")
+        assert row_2240["close"] == "34.3000"
+        assert row_2240["change_amount"] == "-0.4000"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ── 3c. Bulk company prices — omits OHLC ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_bulk_latest_company_prices_omits_ohlc():
+    price = _make_market_data(symbol="2240")
+
+    db = AsyncMock()
+    db.execute.side_effect = [_scalar_count_result(1), _scalars_all_result([price])]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
+        row = resp.json()["data"][0]
+        for field in ("open", "high", "low", "previous_close"):
+            assert field not in row
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ── 3d. Bulk company prices — empty market_data → empty list ─────────────────
+
+@pytest.mark.asyncio
+async def test_bulk_latest_company_prices_empty():
+    db = AsyncMock()
+    db.execute.side_effect = [_scalar_count_result(0), _scalars_all_result([])]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
+        body = resp.json()
+        assert body["data"] == []
+        assert body["total"] == 0
+        assert body["meta"]["pipeline_status"] == "not_configured"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ── 3e. Bulk company prices — no duplicate symbols + structural dedup check ──
+
+@pytest.mark.asyncio
+async def test_bulk_latest_company_prices_no_duplicate_symbols():
+    p1 = _make_market_data(symbol="2240")
+    p2 = _make_market_data(symbol="2222")
+    p3 = _make_market_data(symbol="1120")
+
+    db = AsyncMock()
+    db.execute.side_effect = [_scalar_count_result(3), _scalars_all_result([p1, p2, p3])]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
+        symbols = [row["symbol"] for row in resp.json()["data"]]
+        assert len(symbols) == len(set(symbols))
+    finally:
+        app.dependency_overrides.clear()
+
+    # Structural guarantee: the query groups by symbol and takes MAX(trade_date)
+    # per symbol before joining back to market_data — the SQL itself cannot
+    # produce more than one row per symbol, regardless of how many price rows
+    # exist for that symbol (mirrors the index-prices endpoint's same pattern).
+    from app.api.v1.companies import get_latest_company_prices
+    import inspect
+    source = inspect.getsource(get_latest_company_prices)
+    assert "func.max(MarketData.trade_date)" in source
+    assert "group_by(MarketData.symbol)" in source
+
+
+# ── 3f. Bulk company prices — Tadawul-only filter present ────────────────────
+
+@pytest.mark.asyncio
+async def test_bulk_latest_company_prices_tadawul_only_filter():
+    """
+    market_data also contains Nomu and orphaned symbols (confirmed by direct
+    DB query before implementing this endpoint: 399 total rows = 270
+    Tadawul + 125 Nomu + 4 orphaned). With a fully mocked DB session this
+    test can only verify the query construction actually filters by
+    Company.market == "tadawul" — the real exclusion is exercised by the
+    live manual verification in the report, not by this unit test.
+    """
+    db = AsyncMock()
+    db.execute.side_effect = [_scalar_count_result(0), _scalars_all_result([])]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    from app.api.v1.companies import get_latest_company_prices
+    import inspect
+    source = inspect.getsource(get_latest_company_prices)
+    assert 'Company.market == "tadawul"' in source
+    assert "join(Company" in source
 
 
 # ── 4. Latest index prices — latest-per-code, names joined ───────────────────
@@ -356,6 +492,23 @@ async def test_forbidden_fields_absent_company_price():
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.get("/api/v1/companies/2222/prices/latest")
+        all_keys = {k.lower() for k in _collect_keys(resp.json())}
+        assert not (all_keys & _FORBIDDEN_KEYS)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_forbidden_fields_absent_bulk_company_prices():
+    price = _make_market_data(symbol="2240")
+
+    db = AsyncMock()
+    db.execute.side_effect = [_scalar_count_result(1), _scalars_all_result([price])]
+
+    app.dependency_overrides[get_db] = _api_db_override(db)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.get("/api/v1/companies/prices/latest")
         all_keys = {k.lower() for k in _collect_keys(resp.json())}
         assert not (all_keys & _FORBIDDEN_KEYS)
     finally:

@@ -304,6 +304,81 @@ async def get_company_financials(
     return SingleResponse(data=out, meta=meta)
 
 
+@router.get("/prices/latest", response_model=PaginatedResponse[CompanyPriceOut])
+async def get_latest_company_prices(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(500, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Read-only latest market_data row per company — one request instead of
+    one per symbol (the screener's original motivation for this endpoint).
+
+    Tadawul-only via an inner join to companies: market_data also holds
+    Nomu rows and a handful of symbols with no matching company record at
+    all, confirmed by direct query before writing this endpoint (399 total
+    market_data rows: 270 Tadawul, 125 Nomu, 4 orphaned). Joining through
+    companies.market == "tadawul" excludes both non-Tadawul cases safely.
+
+    open/high/low/previous_close are not exposed — same as
+    GET /companies/{symbol}/prices/latest.
+    """
+    # One row per symbol: the most recent trade_date for that symbol,
+    # restricted to Tadawul company symbols. uq_market_data_symbol_date
+    # guarantees the join below yields at most one MarketData row per
+    # symbol for that max trade_date.
+    latest_dates = (
+        select(
+            MarketData.symbol,
+            func.max(MarketData.trade_date).label("max_trade_date"),
+        )
+        .join(Company, Company.symbol == MarketData.symbol)
+        .where(Company.market == "tadawul")
+        .group_by(MarketData.symbol)
+        .subquery()
+    )
+
+    count_result = await db.execute(select(func.count()).select_from(latest_dates))
+    total = count_result.scalar() or 0
+
+    query = (
+        select(MarketData)
+        .join(
+            latest_dates,
+            (MarketData.symbol == latest_dates.c.symbol)
+            & (MarketData.trade_date == latest_dates.c.max_trade_date),
+        )
+        .order_by(MarketData.symbol)
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+    )
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    data = [
+        CompanyPriceOut(
+            symbol=row.symbol,
+            trade_date=row.trade_date,
+            close=row.close,
+            change_amount=row.change_amount,
+            change_pct=row.change_pct,
+            volume=row.volume,
+            turnover=row.turnover,
+            trades_count=row.trades,
+            source=row.source,
+            source_url=row.source_url,
+        )
+        for row in rows
+    ]
+
+    meta = PipelineMeta(
+        pipeline_status="populated" if total > 0 else "not_configured",
+        message=None if total > 0 else "No company price data found. Run the company prices import job.",
+    )
+
+    return PaginatedResponse(data=data, total=total, page=page, per_page=per_page, meta=meta)
+
+
 @router.get("/{symbol}/prices/latest", response_model=SingleResponse[CompanyPriceOut])
 async def get_company_latest_price(symbol: str, db: AsyncSession = Depends(get_db)):
     """
