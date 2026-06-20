@@ -1,30 +1,29 @@
-import Link from "next/link";
 import StatusBadge from "@/components/financials/StatusBadge";
 import type { FinancialsCompanySection } from "@/types/financials";
 
 /**
- * Company identity card — symbol, names, market, sector, and the
- * normalization status badge surfaced prominently right next to the
- * symbol (the single most important trust signal on the page), rather
- * than buried inside the filing details table.
+ * Company identity + price hero card. Identity sits at the flex start,
+ * the price ticker at the flex end — with `justify-between` this mirrors
+ * automatically under RTL (Arabic: price visually on the left; English:
+ * price visually on the right) without any locale branching here.
+ * "Back to companies" lives as a breadcrumb above this card, not inside
+ * it — kept separate from the company's own identity/price hero.
  */
 export default function CompanyHeaderCard({
   company,
   normalizationStatus,
   sectorLabel,
   notAvailableText,
-  backToListLabel,
-  backHref,
+  priceTicker,
 }: {
   company: FinancialsCompanySection;
   normalizationStatus: string;
   sectorLabel: string;
   notAvailableText: string;
-  backToListLabel: string;
-  backHref: string;
+  priceTicker: React.ReactNode;
 }) {
   return (
-    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-5">
+    <div id="summary" className="scroll-mt-28 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-5">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -42,12 +41,7 @@ export default function CompanyHeaderCard({
             {sectorLabel}: {company.sector_ar ?? company.sector_en ?? notAvailableText}
           </p>
         </div>
-        <Link
-          href={backHref}
-          className="text-sm px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors whitespace-nowrap"
-        >
-          {backToListLabel}
-        </Link>
+        {priceTicker}
       </div>
     </div>
   );

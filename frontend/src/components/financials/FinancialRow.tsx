@@ -25,8 +25,8 @@ export default function FinancialRow({
 
   return (
     <div
-      className={`flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 last:border-0 ${
-        emphasize ? "-mx-4 px-4 bg-gray-50 dark:bg-gray-800/50" : ""
+      className={`flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800 last:border-0 ${
+        emphasize ? "-mx-3.5 px-3.5 bg-gray-50 dark:bg-gray-800/50" : ""
       }`}
     >
       <span

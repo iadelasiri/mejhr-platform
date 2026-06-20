@@ -2,9 +2,13 @@ import { getTranslations } from "next-intl/server";
 import type { Metadata } from "next";
 import SectionCard from "@/components/financials/SectionCard";
 import FinancialRow from "@/components/financials/FinancialRow";
+import MetricCard from "@/components/financials/MetricCard";
 import DataQualityPanel from "@/components/financials/DataQualityPanel";
 import CompanyHeaderCard from "@/components/financials/CompanyHeaderCard";
+import PriceTicker from "@/components/financials/PriceTicker";
 import PriceCard from "@/components/financials/PriceCard";
+import CompanyTabs from "@/components/financials/CompanyTabs";
+import ComingLaterStrip from "@/components/financials/ComingLaterStrip";
 import QuickSampleLinks from "@/components/companies/QuickSampleLinks";
 import { formatDateTime } from "@/lib/format";
 import type { CompanyFinancialsResponse } from "@/types/financials";
@@ -43,7 +47,7 @@ async function fetchFinancials(symbol: string): Promise<{
 
 /**
  * Latest price is supplementary — any failure (network, 404, no row yet)
- * degrades to null (rendered as a clean "unavailable" card) and never
+ * degrades to null (rendered as a clean "unavailable" state) and never
  * blocks or errors the financials page itself.
  */
 async function fetchLatestPrice(symbol: string): Promise<CompanyPriceOut | null> {
@@ -118,51 +122,79 @@ export default async function CompanyFinancialsPage({
   const data = result.data;
   const { company, filing, balance_sheet, income_statement, cash_flow, data_quality, metadata } = data;
 
+  const priceLabels = {
+    title: t("price.title"),
+    close: t("price.close"),
+    changeAmount: t("price.changeAmount"),
+    changePct: t("price.changePct"),
+    volume: t("price.volume"),
+    turnover: t("price.turnover"),
+    tradesCount: t("price.tradesCount"),
+    tradeDate: t("price.tradeDate"),
+    source: t("price.source"),
+    notAvailable,
+    unavailableMessage: t("price.unavailableMessage"),
+  };
+
+  const tabs = [
+    { id: "summary", label: t("tabs.summary") },
+    { id: "financials", label: t("tabs.financials") },
+    { id: "balance-sheet", label: t("tabs.balanceSheet") },
+    { id: "cash-flow", label: t("tabs.cashFlow") },
+    { id: "data-quality", label: t("tabs.dataQuality") },
+    { id: "source", label: t("tabs.source") },
+  ];
+
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+    <div className="max-w-5xl mx-auto px-4 py-6 space-y-4">
+      <Link
+        href={`/${locale}/companies`}
+        className="inline-block text-sm text-gray-500 dark:text-gray-400 hover:text-mejhr-600 dark:hover:text-mejhr-400 hover:underline"
+      >
+        {t("backToList")}
+      </Link>
+
       <CompanyHeaderCard
         company={company}
         normalizationStatus={filing.normalization_status}
         sectorLabel={t("company.sector")}
         notAvailableText={notAvailable}
-        backToListLabel={t("backToList")}
-        backHref={`/${locale}/companies`}
+        priceTicker={<PriceTicker price={price} labels={priceLabels} />}
       />
 
-      <PriceCard
-        price={price}
-        locale={locale}
-        labels={{
-          title: t("price.title"),
-          close: t("price.close"),
-          changeAmount: t("price.changeAmount"),
-          changePct: t("price.changePct"),
-          volume: t("price.volume"),
-          turnover: t("price.turnover"),
-          tradesCount: t("price.tradesCount"),
-          tradeDate: t("price.tradeDate"),
-          source: t("price.source"),
-          notAvailable,
-          unavailableMessage: t("price.unavailableMessage"),
-        }}
-      />
+      <CompanyTabs tabs={tabs} />
 
-      {/* Filing / period section — normalization status now lives in the header card above */}
+      {/* Key metrics — quick-scan row, only fields already approved in the financials/price APIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <MetricCard label={t("incomeStatement.revenue")} value={income_statement.revenue} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("incomeStatement.netIncome")} value={income_statement.net_income} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("balanceSheet.totalAssets")} value={balance_sheet.total_assets} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("balanceSheet.totalEquity")} value={balance_sheet.equity} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("balanceSheet.cashAndEquivalents")} value={balance_sheet.cash_and_equivalents} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("balanceSheet.totalDebt")} value={balance_sheet.total_debt} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("cashFlow.freeCashFlow")} value={cash_flow.free_cash_flow} locale={locale} notAvailableText={notAvailable} />
+        <MetricCard label={t("price.close")} value={price?.close ?? null} locale={locale} notAvailableText={notAvailable} variant="price" />
+      </div>
+
+      {/* Full price detail — unchanged from the approved Price Display work */}
+      <PriceCard price={price} locale={locale} labels={priceLabels} />
+
+      {/* Filing / period section — normalization status lives in the header card above */}
       <SectionCard title={t("sections.filing")}>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
-          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+          <div className="flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0">
             <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.fiscalYear")}</span>
             <span dir="ltr" className="num text-sm font-semibold text-gray-900 dark:text-gray-100">
               {filing.fiscal_year !== null ? String(filing.fiscal_year) : notAvailable}
             </span>
           </div>
-          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+          <div className="flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0">
             <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.period")}</span>
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               {filing.period ?? notAvailable}
             </span>
           </div>
-          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+          <div className="flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0">
             <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.periodType")}</span>
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               {filing.period_type ?? notAvailable}
@@ -174,7 +206,7 @@ export default async function CompanyFinancialsPage({
             locale={locale}
             notAvailableText={notAvailable}
           />
-          <div className="flex justify-between items-baseline py-2.5 sm:py-2">
+          <div className="flex justify-between items-baseline py-1.5">
             <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.isConsolidated")}</span>
             <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               {filing.is_consolidated === null ? notAvailable : filing.is_consolidated ? "✓" : "✗"}
@@ -183,9 +215,9 @@ export default async function CompanyFinancialsPage({
         </div>
       </SectionCard>
 
-      {/* Balance Sheet / Income Statement / Cash Flow */}
+      {/* Balance Sheet / Income Statement ("Financials") / Cash Flow */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <SectionCard title={t("sections.balanceSheet")} accent="balanceSheet">
+        <SectionCard id="balance-sheet" title={t("sections.balanceSheet")} accent="balanceSheet">
           <FinancialRow
             label={t("balanceSheet.totalAssets")}
             value={balance_sheet.total_assets}
@@ -201,7 +233,7 @@ export default async function CompanyFinancialsPage({
           <FinancialRow label={t("balanceSheet.totalDebt")} value={balance_sheet.total_debt} locale={locale} notAvailableText={notAvailable} />
         </SectionCard>
 
-        <SectionCard title={t("sections.incomeStatement")} accent="incomeStatement">
+        <SectionCard id="financials" title={t("sections.incomeStatement")} accent="incomeStatement">
           <FinancialRow label={t("incomeStatement.revenue")} value={income_statement.revenue} locale={locale} notAvailableText={notAvailable} emphasize />
           <FinancialRow label={t("incomeStatement.financeCost")} value={income_statement.finance_cost} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("incomeStatement.profitBeforeTax")} value={income_statement.profit_before_tax} locale={locale} notAvailableText={notAvailable} />
@@ -209,7 +241,7 @@ export default async function CompanyFinancialsPage({
           <FinancialRow label={t("incomeStatement.netIncome")} value={income_statement.net_income} locale={locale} notAvailableText={notAvailable} emphasize />
         </SectionCard>
 
-        <SectionCard title={t("sections.cashFlow")} accent="cashFlow">
+        <SectionCard id="cash-flow" title={t("sections.cashFlow")} accent="cashFlow">
           <FinancialRow label={t("cashFlow.operatingCashFlow")} value={cash_flow.operating_cash_flow} locale={locale} notAvailableText={notAvailable} emphasize />
           <FinancialRow label={t("cashFlow.investingCashFlow")} value={cash_flow.investing_cash_flow} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("cashFlow.financingCashFlow")} value={cash_flow.financing_cash_flow} locale={locale} notAvailableText={notAvailable} />
@@ -219,7 +251,7 @@ export default async function CompanyFinancialsPage({
       </div>
 
       {/* Data Quality */}
-      <SectionCard title={t("sections.dataQuality")}>
+      <SectionCard id="data-quality" title={t("sections.dataQuality")}>
         <DataQualityPanel
           missingFields={data_quality.missing_fields}
           conflicts={data_quality.conflicts}
@@ -243,19 +275,19 @@ export default async function CompanyFinancialsPage({
         />
       </SectionCard>
 
-      {/* Metadata */}
-      <SectionCard title={t("sections.metadata")}>
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
+      {/* Source */}
+      <SectionCard id="source" title={t("sections.source")}>
+        <div className="flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800">
           <span className="text-sm text-gray-600 dark:text-gray-400">{t("metadata.dataSource")}</span>
           <span className="text-sm font-mono text-gray-900 dark:text-gray-100">{metadata.data_source}</span>
         </div>
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex justify-between items-baseline py-1.5 border-b border-gray-100 dark:border-gray-800">
           <span className="text-sm text-gray-600 dark:text-gray-400">{t("metadata.generatedAt")}</span>
           <span className="text-sm text-gray-900 dark:text-gray-100">
             {formatDateTime(metadata.generated_at, locale, notAvailable)}
           </span>
         </div>
-        <div className="flex justify-between items-baseline py-2.5">
+        <div className="flex justify-between items-baseline py-1.5">
           <span className="text-sm text-gray-600 dark:text-gray-400">{t("metadata.manualOverride")}</span>
           <span
             className={`text-sm font-semibold ${
@@ -266,6 +298,18 @@ export default async function CompanyFinancialsPage({
           </span>
         </div>
       </SectionCard>
+
+      <ComingLaterStrip
+        title={t("comingLater.title")}
+        items={[
+          t("comingLater.ratios"),
+          t("comingLater.dividends"),
+          t("comingLater.peers"),
+          t("comingLater.insights"),
+          t("comingLater.valuation"),
+          t("comingLater.screener"),
+        ]}
+      />
 
       <div className="pt-2">
         <QuickSampleLinks locale={locale} label={t("backToList")} />

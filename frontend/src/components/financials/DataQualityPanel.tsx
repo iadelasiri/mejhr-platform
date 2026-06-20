@@ -35,7 +35,7 @@ export default function DataQualityPanel({
   const [showSourceMap, setShowSourceMap] = useState(false);
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Quick-scan summary strip */}
       <div className="flex flex-wrap gap-2">
         <SummaryChip

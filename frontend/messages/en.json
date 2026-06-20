@@ -160,7 +160,25 @@
       "incomeStatement": "Income Statement",
       "cashFlow": "Cash Flow",
       "dataQuality": "Data Quality",
-      "metadata": "Metadata"
+      "metadata": "Metadata",
+      "source": "Source"
+    },
+    "tabs": {
+      "summary": "Summary",
+      "financials": "Financials",
+      "balanceSheet": "Balance Sheet",
+      "cashFlow": "Cash Flow",
+      "dataQuality": "Data Quality",
+      "source": "Source"
+    },
+    "comingLater": {
+      "title": "Coming later — not implemented yet",
+      "ratios": "Ratios",
+      "dividends": "Dividends",
+      "peers": "Peer Comparison",
+      "insights": "Deep Insights",
+      "valuation": "Valuation",
+      "screener": "Screener Metrics"
     },
     "company": {
       "symbol": "Symbol",
@@ -234,6 +252,10 @@
       "source": "Source",
       "unavailableMessage": "No price data available for this symbol."
     }
+  },
+  "marketStrip": {
+    "noData": "Market index data not available",
+    "provenance": "Saudi Exchange — official data"
   },
   "market": {
     "title": "Market Indices",

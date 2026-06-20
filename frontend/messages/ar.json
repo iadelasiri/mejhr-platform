@@ -160,7 +160,25 @@
       "incomeStatement": "قائمة الدخل",
       "cashFlow": "قائمة التدفقات النقدية",
       "dataQuality": "جودة البيانات",
-      "metadata": "بيانات وصفية"
+      "metadata": "بيانات وصفية",
+      "source": "المصدر"
+    },
+    "tabs": {
+      "summary": "نظرة عامة",
+      "financials": "البيانات المالية",
+      "balanceSheet": "قائمة المركز المالي",
+      "cashFlow": "التدفقات النقدية",
+      "dataQuality": "جودة البيانات",
+      "source": "المصدر"
+    },
+    "comingLater": {
+      "title": "قريبًا — غير متاح حاليًا",
+      "ratios": "المؤشرات المالية",
+      "dividends": "التوزيعات",
+      "peers": "مقارنة الأقران",
+      "insights": "تحليلات متقدمة",
+      "valuation": "التقييم",
+      "screener": "مؤشرات الفلتر"
     },
     "company": {
       "symbol": "الرمز",
@@ -234,6 +252,10 @@
       "source": "المصدر",
       "unavailableMessage": "لا تتوفر بيانات سعر لهذا الرمز."
     }
+  },
+  "marketStrip": {
+    "noData": "بيانات مؤشرات السوق غير متوفرة",
+    "provenance": "السوق السعودية — بيانات رسمية"
   },
   "market": {
     "title": "مؤشرات السوق",

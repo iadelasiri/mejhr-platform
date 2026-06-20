@@ -6,6 +6,7 @@ import { notFound } from "next/navigation";
 import { ThemeProvider } from "@/components/layout/ThemeProvider";
 import Navbar from "@/components/layout/Navbar";
 import Footer from "@/components/layout/Footer";
+import MarketStrip from "@/components/market/MarketStrip";
 import { routing } from "@/i18n/routing";
 import "../globals.css";
 
@@ -55,6 +56,7 @@ export default async function LocaleLayout({ children, params: { locale } }: Pro
           <ThemeProvider>
             <div className="flex flex-col min-h-screen">
               <Navbar />
+              <MarketStrip />
               <main className="flex-1">{children}</main>
               <Footer />
             </div>
