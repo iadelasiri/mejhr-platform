@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.models.company import Company
 from app.models.financial import NormalizedFinancial
 from app.models.job import ImportJob
+from app.models.market_data import MarketData
 from app.schemas.common import PaginatedResponse, SingleResponse, PipelineMeta, LastImportJob
 from app.schemas.company import CompanySummary, CompanyOut
 from app.schemas.financial import (
@@ -22,6 +23,7 @@ from app.schemas.financial import (
     IncomeStatementSection,
     ResponseMetadata,
 )
+from app.schemas.market_data import CompanyPriceOut
 
 router = APIRouter()
 
@@ -300,3 +302,54 @@ async def get_company_financials(
     meta = PipelineMeta(pipeline_status="populated")
 
     return SingleResponse(data=out, meta=meta)
+
+
+@router.get("/{symbol}/prices/latest", response_model=SingleResponse[CompanyPriceOut])
+async def get_company_latest_price(symbol: str, db: AsyncSession = Depends(get_db)):
+    """
+    Read-only latest market_data row for a company.
+
+    open/high/low/previous_close are not exposed — the Saudi Exchange
+    ingestion path for company prices does not provide full OHLC, and
+    including those fields (even as null) would imply they exist. See
+    PHASE_2D5_DISCOVERY.md.
+    """
+    symbol = symbol.upper()
+
+    company_result = await db.execute(select(Company).where(Company.symbol == symbol))
+    company = company_result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Company {symbol} not found",
+        )
+
+    price_result = await db.execute(
+        select(MarketData)
+        .where(MarketData.symbol == symbol)
+        .order_by(MarketData.trade_date.desc())
+        .limit(1)
+    )
+    price = price_result.scalars().first()
+
+    if not price:
+        meta = PipelineMeta(
+            pipeline_status="not_configured",
+            message=f"No price data found for {symbol}. Run the company prices import job.",
+        )
+        return SingleResponse(success=False, data=None, meta=meta)
+
+    out = CompanyPriceOut(
+        symbol=price.symbol,
+        trade_date=price.trade_date,
+        close=price.close,
+        change_amount=price.change_amount,
+        change_pct=price.change_pct,
+        volume=price.volume,
+        turnover=price.turnover,
+        trades_count=price.trades,
+        source=price.source,
+        source_url=price.source_url,
+    )
+
+    return SingleResponse(data=out, meta=PipelineMeta(pipeline_status="populated"))

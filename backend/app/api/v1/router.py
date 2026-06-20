@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     health, auth, companies, screener, sectors,
-    announcements, data_quality, jobs, system,
+    announcements, data_quality, jobs, system, market,
 )
 
 api_router = APIRouter()
@@ -16,3 +16,4 @@ api_router.include_router(announcements.router, prefix="/announcements", tags=["
 api_router.include_router(data_quality.router, prefix="/data-quality", tags=["Data Quality"])
 api_router.include_router(jobs.router, prefix="/jobs", tags=["Jobs"])
 api_router.include_router(system.router, prefix="/system", tags=["System"])
+api_router.include_router(market.router, prefix="/market", tags=["Market"])
