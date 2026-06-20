@@ -43,6 +43,7 @@ node_modules/
 out/
 .nuxt/
 dist/
+*.tsbuildinfo
 
 # Environment
 .env
