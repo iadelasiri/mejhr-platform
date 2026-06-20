@@ -31,28 +31,44 @@
     "rule5": "Every value includes source and timestamp"
   },
   "screener": {
-    "title": "Stock Screener",
-    "subtitle": "Filter Saudi-listed companies by financial metrics",
-    "noData": "No official Saudi Exchange company data imported yet",
-    "noDataDesc": "Run the Saudi Exchange connectivity test and companies refresh job. Then the full pipeline: normalize → calculate_ratios → build_screener",
+    "title": "Screener",
+    "subtitle": "Official Saudi Exchange company data — Tadawul (Main Market) only",
+    "provenance": "Saudi Exchange — official data",
+    "countLabel": "{count} Tadawul companies",
+    "searchPlaceholder": "Search by symbol or company name...",
+    "filters": {
+      "sector": "Sector",
+      "allSectors": "All sectors",
+      "mappingStatus": "Mapping Status",
+      "allStatuses": "All statuses",
+      "reset": "Reset filters"
+    },
+    "tabs": {
+      "all": "All companies",
+      "mapped": "Sector mapped",
+      "unmapped": "Unmapped sector"
+    },
     "columns": {
       "symbol": "Symbol",
-      "company": "Company",
+      "nameAr": "Arabic Name",
+      "nameEn": "English Name",
       "market": "Market",
       "sector": "Sector",
-      "price": "Price",
-      "change": "Change %",
-      "marketCap": "Market Cap",
-      "revenue": "Revenue",
-      "netIncome": "Net Income",
+      "mappingStatus": "Mapping Status"
+    },
+    "resultsCount": "{count} / {total}",
+    "noResults": "No companies match your filters",
+    "noResultsDesc": "Try a different search term or reset filters",
+    "loadError": "Could not load companies",
+    "loadErrorDesc": "The backend API may be unreachable. Check the connection and try again.",
+    "comingLater": {
+      "title": "Coming later — not implemented yet",
+      "ratios": "Ratios",
       "roic": "ROIC",
       "evic": "EV/IC",
-      "pe": "P/E",
-      "pb": "P/B",
-      "ps": "P/S",
-      "debtEquity": "D/E",
-      "fcf": "FCF",
-      "dataQuality": "Data Quality"
+      "valuation": "Valuation",
+      "dividends": "Dividends",
+      "peers": "Peer Comparison"
     }
   },
   "sectors": {
