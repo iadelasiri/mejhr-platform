@@ -41,6 +41,7 @@ export default function Navbar() {
   const otherLocalePath = "/" + otherLocale + pathname.substring(locale.length + 1);
 
   const navLinks = [
+    { href: `/${locale}/companies`, label: t("companies") },
     { href: `/${locale}/screener`, label: t("screener") },
     { href: `/${locale}/sectors`, label: t("sectors") },
     { href: `/${locale}/announcements`, label: t("announcements") },

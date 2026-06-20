@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "الرئيسية",
+    "companies": "الشركات",
     "screener": "الفلتر",
     "sectors": "القطاعات",
     "announcements": "الإفصاحات",
@@ -120,10 +121,105 @@
     "empty": "لا توجد بيانات",
     "sampleWarning": "بيانات تجريبية — غير رسمية — لاختبار الواجهة فقط",
     "missing": "—",
+    "notAvailable": "غير متوفر",
     "source": "المصدر",
     "lastUpdated": "آخر تحديث",
     "page": "صفحة",
     "of": "من",
     "perPage": "لكل صفحة"
+  },
+  "companiesList": {
+    "title": "الشركات",
+    "subtitle": "الشركات المدرجة في السوق الرئيسية (تداول) — بيانات رسمية فقط",
+    "searchPlaceholder": "ابحث بالرمز أو اسم الشركة...",
+    "columns": {
+      "symbol": "الرمز",
+      "nameAr": "الاسم بالعربية",
+      "nameEn": "الاسم بالإنجليزية",
+      "market": "السوق",
+      "sector": "القطاع",
+      "mappingStatus": "حالة التصنيف"
+    },
+    "resultsCount": "{count} شركة",
+    "noResults": "لا توجد شركات تطابق بحثك",
+    "noResultsDesc": "جرّب رمزًا أو اسم شركة مختلفًا",
+    "loadError": "تعذّر تحميل الشركات",
+    "loadErrorDesc": "قد يكون الاتصال بواجهة الخادم غير متاح. تحقق من الاتصال وحاول مرة أخرى.",
+    "quickSamples": "روابط سريعة لشركات نموذجية"
+  },
+  "financials": {
+    "backToList": "العودة إلى الشركات",
+    "notFound": "لا توجد بيانات مالية موحّدة لهذا الرمز",
+    "notFoundDesc": "قد لا يكون هذا الرمز موجودًا، أو لم يتم تشغيل خط معالجة XBRL له بعد.",
+    "loadError": "تعذّر تحميل البيانات المالية",
+    "sections": {
+      "company": "الشركة",
+      "filing": "الإقرار / الفترة",
+      "balanceSheet": "قائمة المركز المالي",
+      "incomeStatement": "قائمة الدخل",
+      "cashFlow": "قائمة التدفقات النقدية",
+      "dataQuality": "جودة البيانات",
+      "metadata": "بيانات وصفية"
+    },
+    "company": {
+      "symbol": "الرمز",
+      "nameAr": "الاسم بالعربية",
+      "nameEn": "الاسم بالإنجليزية",
+      "market": "السوق",
+      "sector": "القطاع"
+    },
+    "filing": {
+      "fiscalYear": "السنة المالية",
+      "period": "الفترة",
+      "periodType": "نوع الفترة",
+      "reportingScale": "مقياس التقرير",
+      "isConsolidated": "موحّدة",
+      "normalizationStatus": "حالة التوحيد"
+    },
+    "balanceSheet": {
+      "totalAssets": "إجمالي الموجودات",
+      "totalLiabilities": "إجمالي المطلوبات",
+      "totalEquity": "إجمالي حقوق الملكية",
+      "cashAndEquivalents": "النقد وما يعادله",
+      "shortTermDebt": "ديون قصيرة الأجل",
+      "longTermDebt": "ديون طويلة الأجل",
+      "totalDebt": "إجمالي الدين"
+    },
+    "incomeStatement": {
+      "revenue": "الإيرادات",
+      "financeCost": "تكلفة التمويل",
+      "profitBeforeTax": "الربح قبل الزكاة والضريبة",
+      "zakatTax": "الزكاة / الضريبة",
+      "netIncome": "صافي الربح"
+    },
+    "cashFlow": {
+      "operatingCashFlow": "التدفقات النقدية التشغيلية",
+      "investingCashFlow": "التدفقات النقدية الاستثمارية",
+      "financingCashFlow": "التدفقات النقدية التمويلية",
+      "capex": "المصروفات الرأسمالية",
+      "freeCashFlow": "التدفق النقدي الحر"
+    },
+    "dataQuality": {
+      "missingFields": "حقول مفقودة",
+      "noMissingFields": "لا توجد حقول مفقودة",
+      "conflicts": "تعارضات",
+      "noConflicts": "لا توجد تعارضات",
+      "conflictField": "الحقل",
+      "conflictStatus": "الحالة",
+      "conflictCandidates": "عدد المرشحين",
+      "sourceMapAvailable": "تتبّع المصدر متوفر",
+      "sourceMapUnavailable": "تتبّع المصدر غير متوفر",
+      "viewSourceDetails": "عرض تفاصيل المصدر",
+      "hideSourceDetails": "إخفاء تفاصيل المصدر",
+      "calculated": "محتسبة",
+      "formula": "المعادلة"
+    },
+    "metadata": {
+      "dataSource": "مصدر البيانات",
+      "generatedAt": "وقت الإنشاء",
+      "manualOverride": "تجاوز يدوي",
+      "manualOverrideYes": "نعم",
+      "manualOverrideNo": "لا"
+    }
   }
 }

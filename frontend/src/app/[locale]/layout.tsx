@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Noto_Sans_Arabic } from "next/font/google";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages } from "next-intl/server";
 import { notFound } from "next/navigation";
@@ -12,6 +12,12 @@ import "../globals.css";
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
+  display: "swap",
+});
+
+const notoSansArabic = Noto_Sans_Arabic({
+  subsets: ["arabic"],
+  variable: "--font-noto-arabic",
   display: "swap",
 });
 
@@ -38,7 +44,12 @@ export default async function LocaleLayout({ children, params: { locale } }: Pro
   const dir = locale === "ar" ? "rtl" : "ltr";
 
   return (
-    <html lang={locale} dir={dir} className={inter.variable} suppressHydrationWarning>
+    <html
+      lang={locale}
+      dir={dir}
+      className={`${inter.variable} ${notoSansArabic.variable}`}
+      suppressHydrationWarning
+    >
       <body className="min-h-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 antialiased">
         <NextIntlClientProvider messages={messages}>
           <ThemeProvider>

@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "Home",
+    "companies": "Companies",
     "screener": "Screener",
     "sectors": "Sectors",
     "announcements": "Announcements",
@@ -120,10 +121,105 @@
     "empty": "No data",
     "sampleWarning": "SAMPLE DATA — NOT OFFICIAL — For UI testing only",
     "missing": "—",
+    "notAvailable": "Not available",
     "source": "Source",
     "lastUpdated": "Last updated",
     "page": "Page",
     "of": "of",
     "perPage": "Per page"
+  },
+  "companiesList": {
+    "title": "Companies",
+    "subtitle": "Tadawul (Main Market) listed companies — official data only",
+    "searchPlaceholder": "Search by symbol or company name...",
+    "columns": {
+      "symbol": "Symbol",
+      "nameAr": "Arabic Name",
+      "nameEn": "English Name",
+      "market": "Market",
+      "sector": "Sector",
+      "mappingStatus": "Mapping Status"
+    },
+    "resultsCount": "{count} companies",
+    "noResults": "No companies match your search",
+    "noResultsDesc": "Try a different symbol or company name",
+    "loadError": "Could not load companies",
+    "loadErrorDesc": "The backend API may be unreachable. Check the connection and try again.",
+    "quickSamples": "Quick sample links"
+  },
+  "financials": {
+    "backToList": "Back to companies",
+    "notFound": "No normalized financial data found",
+    "notFoundDesc": "This symbol may not exist, or the XBRL normalization pipeline has not yet run for it.",
+    "loadError": "Could not load financial data",
+    "sections": {
+      "company": "Company",
+      "filing": "Filing / Period",
+      "balanceSheet": "Balance Sheet",
+      "incomeStatement": "Income Statement",
+      "cashFlow": "Cash Flow",
+      "dataQuality": "Data Quality",
+      "metadata": "Metadata"
+    },
+    "company": {
+      "symbol": "Symbol",
+      "nameAr": "Arabic Name",
+      "nameEn": "English Name",
+      "market": "Market",
+      "sector": "Sector"
+    },
+    "filing": {
+      "fiscalYear": "Fiscal Year",
+      "period": "Period",
+      "periodType": "Period Type",
+      "reportingScale": "Reporting Scale",
+      "isConsolidated": "Consolidated",
+      "normalizationStatus": "Normalization Status"
+    },
+    "balanceSheet": {
+      "totalAssets": "Total Assets",
+      "totalLiabilities": "Total Liabilities",
+      "totalEquity": "Total Equity",
+      "cashAndEquivalents": "Cash & Equivalents",
+      "shortTermDebt": "Short-term Debt",
+      "longTermDebt": "Long-term Debt",
+      "totalDebt": "Total Debt"
+    },
+    "incomeStatement": {
+      "revenue": "Revenue",
+      "financeCost": "Finance Cost",
+      "profitBeforeTax": "Profit Before Tax",
+      "zakatTax": "Zakat / Tax",
+      "netIncome": "Net Income"
+    },
+    "cashFlow": {
+      "operatingCashFlow": "Operating Cash Flow",
+      "investingCashFlow": "Investing Cash Flow",
+      "financingCashFlow": "Financing Cash Flow",
+      "capex": "Capital Expenditure",
+      "freeCashFlow": "Free Cash Flow"
+    },
+    "dataQuality": {
+      "missingFields": "Missing Fields",
+      "noMissingFields": "No missing fields",
+      "conflicts": "Conflicts",
+      "noConflicts": "No conflicts",
+      "conflictField": "Field",
+      "conflictStatus": "Status",
+      "conflictCandidates": "Candidates",
+      "sourceMapAvailable": "Source traceability available",
+      "sourceMapUnavailable": "Source traceability unavailable",
+      "viewSourceDetails": "View source details",
+      "hideSourceDetails": "Hide source details",
+      "calculated": "Calculated",
+      "formula": "Formula"
+    },
+    "metadata": {
+      "dataSource": "Data Source",
+      "generatedAt": "Generated At",
+      "manualOverride": "Manual Override",
+      "manualOverrideYes": "Yes",
+      "manualOverrideNo": "No"
+    }
   }
 }

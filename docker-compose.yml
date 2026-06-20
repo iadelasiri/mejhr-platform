@@ -154,6 +154,12 @@ services:
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Server-side (SSR) fetches run inside this container, where
+      # "localhost" refers to the container itself, not the backend
+      # container. Browser-side fetches use NEXT_PUBLIC_API_URL above
+      # (reachable from the host). API_INTERNAL_URL is intentionally NOT
+      # prefixed with NEXT_PUBLIC_ so it never leaks into the client bundle.
+      API_INTERNAL_URL: ${API_INTERNAL_URL:-http://backend:8000}
       NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Mejhr}
       NODE_ENV: development
     volumes:
