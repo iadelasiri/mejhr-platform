@@ -36,6 +36,25 @@ export default function DataQualityPanel({
 
   return (
     <div className="space-y-4">
+      {/* Quick-scan summary strip */}
+      <div className="flex flex-wrap gap-2">
+        <SummaryChip
+          ok={missingFields.length === 0}
+          okText={labels.noMissingFields}
+          badText={`${labels.missingFields}: ${missingFields.length}`}
+        />
+        <SummaryChip
+          ok={conflicts.length === 0}
+          okText={labels.noConflicts}
+          badText={`${labels.conflicts}: ${conflicts.length}`}
+        />
+        <SummaryChip
+          ok={sourceMapAvailable}
+          okText={labels.sourceMapAvailable}
+          badText={labels.sourceMapUnavailable}
+        />
+      </div>
+
       {/* Missing fields */}
       <div>
         <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">
@@ -131,5 +150,20 @@ export default function DataQualityPanel({
         )}
       </div>
     </div>
+  );
+}
+
+function SummaryChip({ ok, okText, badText }: { ok: boolean; okText: string; badText: string }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border ${
+        ok
+          ? "bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+          : "bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-900"
+      }`}
+    >
+      <span className={`status-dot ${ok ? "status-dot-green" : "status-dot-yellow"}`} />
+      {ok ? okText : badText}
+    </span>
   );
 }

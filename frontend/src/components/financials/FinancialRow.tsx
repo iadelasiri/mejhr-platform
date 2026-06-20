@@ -11,18 +11,31 @@ export default function FinancialRow({
   locale,
   notAvailableText,
   unit,
+  emphasize = false,
 }: {
   label: string;
   value: string | null;
   locale: string;
   notAvailableText: string;
   unit?: string;
+  /** Visually highlight headline figures (e.g. Total Assets, Net Income, Free Cash Flow). */
+  emphasize?: boolean;
 }) {
   const formatted = formatFinancialValue(value, locale, notAvailableText);
 
   return (
-    <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 last:border-0">
-      <span className="text-sm text-gray-600 dark:text-gray-400">{label}</span>
+    <div
+      className={`flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 last:border-0 ${
+        emphasize ? "-mx-4 px-4 bg-gray-50 dark:bg-gray-800/50" : ""
+      }`}
+    >
+      <span
+        className={`text-sm ${
+          emphasize ? "font-medium text-gray-800 dark:text-gray-200" : "text-gray-600 dark:text-gray-400"
+        }`}
+      >
+        {label}
+      </span>
       <span
         // Force LTR only for the actual number — a plain "-" minus sign is a
         // weak bidi character that the browser can reposition to the wrong
@@ -31,7 +44,7 @@ export default function FinancialRow({
         // "not available" fallback text is real Arabic/English prose and
         // must keep its natural direction, so dir is conditional.
         dir={formatted.isAvailable ? "ltr" : undefined}
-        className={`num text-sm font-semibold ${
+        className={`num font-semibold ${emphasize ? "text-base" : "text-sm"} ${
           !formatted.isAvailable
             ? "text-gray-400 dark:text-gray-600 font-normal"
             : formatted.isNegative

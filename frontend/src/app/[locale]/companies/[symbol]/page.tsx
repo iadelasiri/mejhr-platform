@@ -1,12 +1,13 @@
 import { getTranslations } from "next-intl/server";
 import type { Metadata } from "next";
-import Link from "next/link";
 import SectionCard from "@/components/financials/SectionCard";
 import FinancialRow from "@/components/financials/FinancialRow";
 import DataQualityPanel from "@/components/financials/DataQualityPanel";
+import CompanyHeaderCard from "@/components/financials/CompanyHeaderCard";
 import QuickSampleLinks from "@/components/companies/QuickSampleLinks";
 import { formatDateTime } from "@/lib/format";
 import type { CompanyFinancialsResponse } from "@/types/financials";
+import Link from "next/link";
 
 // API_INTERNAL_URL (server-only) takes priority for this server-side fetch
 // — see lib/api.ts for the full rationale (Docker container networking).
@@ -95,73 +96,61 @@ export default async function CompanyFinancialsPage({
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
-      {/* Header — company section */}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{company.symbol}</h1>
-            {company.market && (
-              <span className="text-xs px-2 py-0.5 bg-mejhr-100 dark:bg-mejhr-900 text-mejhr-700 dark:text-mejhr-300 rounded-full">
-                {company.market}
-              </span>
-            )}
-          </div>
-          <p className="text-lg text-gray-700 dark:text-gray-300 mt-1">{company.name_ar}</p>
-          {company.name_en && <p className="text-sm text-gray-500 dark:text-gray-400">{company.name_en}</p>}
-          <p className="text-xs text-gray-400 mt-1">
-            {t("company.sector")}: {company.sector_ar ?? company.sector_en ?? notAvailable}
-          </p>
-        </div>
-        <Link
-          href={`/${locale}/companies`}
-          className="text-sm px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
-        >
-          {t("backToList")}
-        </Link>
-      </div>
+      <CompanyHeaderCard
+        company={company}
+        normalizationStatus={filing.normalization_status}
+        sectorLabel={t("company.sector")}
+        notAvailableText={notAvailable}
+        backToListLabel={t("backToList")}
+        backHref={`/${locale}/companies`}
+      />
 
-      {/* Filing / period section */}
+      {/* Filing / period section — normalization status now lives in the header card above */}
       <SectionCard title={t("sections.filing")}>
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.fiscalYear")}</span>
-          <span className="num text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {filing.fiscal_year !== null ? String(filing.fiscal_year) : notAvailable}
-          </span>
-        </div>
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.period")}</span>
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {filing.period ?? notAvailable}
-          </span>
-        </div>
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.periodType")}</span>
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {filing.period_type ?? notAvailable}
-          </span>
-        </div>
-        <FinancialRow
-          label={t("filing.reportingScale")}
-          value={filing.reporting_scale !== null ? String(filing.reporting_scale) : null}
-          locale={locale}
-          notAvailableText={notAvailable}
-        />
-        <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800">
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.isConsolidated")}</span>
-          <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-            {filing.is_consolidated === null ? notAvailable : filing.is_consolidated ? "✓" : "✗"}
-          </span>
-        </div>
-        <div className="flex justify-between items-baseline py-2.5">
-          <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.normalizationStatus")}</span>
-          <StatusBadge status={filing.normalization_status} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6">
+          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.fiscalYear")}</span>
+            <span dir="ltr" className="num text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {filing.fiscal_year !== null ? String(filing.fiscal_year) : notAvailable}
+            </span>
+          </div>
+          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.period")}</span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {filing.period ?? notAvailable}
+            </span>
+          </div>
+          <div className="flex justify-between items-baseline py-2.5 border-b border-gray-100 dark:border-gray-800 sm:border-b-0 sm:py-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.periodType")}</span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {filing.period_type ?? notAvailable}
+            </span>
+          </div>
+          <FinancialRow
+            label={t("filing.reportingScale")}
+            value={filing.reporting_scale !== null ? String(filing.reporting_scale) : null}
+            locale={locale}
+            notAvailableText={notAvailable}
+          />
+          <div className="flex justify-between items-baseline py-2.5 sm:py-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">{t("filing.isConsolidated")}</span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {filing.is_consolidated === null ? notAvailable : filing.is_consolidated ? "✓" : "✗"}
+            </span>
+          </div>
         </div>
       </SectionCard>
 
       {/* Balance Sheet / Income Statement / Cash Flow */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <SectionCard title={t("sections.balanceSheet")}>
-          <FinancialRow label={t("balanceSheet.totalAssets")} value={balance_sheet.total_assets} locale={locale} notAvailableText={notAvailable} />
+        <SectionCard title={t("sections.balanceSheet")} accent="balanceSheet">
+          <FinancialRow
+            label={t("balanceSheet.totalAssets")}
+            value={balance_sheet.total_assets}
+            locale={locale}
+            notAvailableText={notAvailable}
+            emphasize
+          />
           <FinancialRow label={t("balanceSheet.totalLiabilities")} value={balance_sheet.total_liabilities} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("balanceSheet.totalEquity")} value={balance_sheet.equity} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("balanceSheet.cashAndEquivalents")} value={balance_sheet.cash_and_equivalents} locale={locale} notAvailableText={notAvailable} />
@@ -170,20 +159,20 @@ export default async function CompanyFinancialsPage({
           <FinancialRow label={t("balanceSheet.totalDebt")} value={balance_sheet.total_debt} locale={locale} notAvailableText={notAvailable} />
         </SectionCard>
 
-        <SectionCard title={t("sections.incomeStatement")}>
-          <FinancialRow label={t("incomeStatement.revenue")} value={income_statement.revenue} locale={locale} notAvailableText={notAvailable} />
+        <SectionCard title={t("sections.incomeStatement")} accent="incomeStatement">
+          <FinancialRow label={t("incomeStatement.revenue")} value={income_statement.revenue} locale={locale} notAvailableText={notAvailable} emphasize />
           <FinancialRow label={t("incomeStatement.financeCost")} value={income_statement.finance_cost} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("incomeStatement.profitBeforeTax")} value={income_statement.profit_before_tax} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("incomeStatement.zakatTax")} value={income_statement.zakat_tax} locale={locale} notAvailableText={notAvailable} />
-          <FinancialRow label={t("incomeStatement.netIncome")} value={income_statement.net_income} locale={locale} notAvailableText={notAvailable} />
+          <FinancialRow label={t("incomeStatement.netIncome")} value={income_statement.net_income} locale={locale} notAvailableText={notAvailable} emphasize />
         </SectionCard>
 
-        <SectionCard title={t("sections.cashFlow")}>
-          <FinancialRow label={t("cashFlow.operatingCashFlow")} value={cash_flow.operating_cash_flow} locale={locale} notAvailableText={notAvailable} />
+        <SectionCard title={t("sections.cashFlow")} accent="cashFlow">
+          <FinancialRow label={t("cashFlow.operatingCashFlow")} value={cash_flow.operating_cash_flow} locale={locale} notAvailableText={notAvailable} emphasize />
           <FinancialRow label={t("cashFlow.investingCashFlow")} value={cash_flow.investing_cash_flow} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("cashFlow.financingCashFlow")} value={cash_flow.financing_cash_flow} locale={locale} notAvailableText={notAvailable} />
           <FinancialRow label={t("cashFlow.capex")} value={cash_flow.capex} locale={locale} notAvailableText={notAvailable} />
-          <FinancialRow label={t("cashFlow.freeCashFlow")} value={cash_flow.free_cash_flow} locale={locale} notAvailableText={notAvailable} />
+          <FinancialRow label={t("cashFlow.freeCashFlow")} value={cash_flow.free_cash_flow} locale={locale} notAvailableText={notAvailable} emphasize />
         </SectionCard>
       </div>
 
@@ -240,20 +229,5 @@ export default async function CompanyFinancialsPage({
         <QuickSampleLinks locale={locale} label={t("backToList")} />
       </div>
     </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    normalized: "bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300",
-    partial: "bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300",
-    conflict: "bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300",
-    pending: "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400",
-    failed: "bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300",
-  };
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[status] ?? colors.pending}`}>
-      {status}
-    </span>
   );
 }
